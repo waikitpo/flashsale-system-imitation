@@ -1,0 +1,14 @@
+2025/12/25 15:21:47 Database initialized successfully (SQLite)
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /api/auth/login           --> seckillapp/router.SetupRouter.func1 (2 handlers)
+[GIN-debug] POST   /api/auth/register        --> seckillapp/router.SetupRouter.func2 (2 handlers)
+[GIN-debug] POST   /api/seckill/enqueue      --> seckillapp/handler.EnqueueHandler (2 handlers)
+[GIN-debug] GET    /api/admin/stats          --> seckillapp/handler.StatsHandler (2 handlers)
+[C++ Engine] Started. Queue Capacity: 65536, Workers: 4
+Async DB Worker Started
+Async Consumer: Polling Started
+2025/12/25 15:21:47 Server exiting...
+2025/12/25 15:21:47 listen: listen tcp :3000: bind: address already in use

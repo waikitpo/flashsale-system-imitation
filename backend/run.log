@@ -1,0 +1,154 @@
+# seckillapp/handler
+In file included from ../../engine/src/bridge.cpp:2,
+                 from bridge_wrapper.cpp:1:
+../../engine/src/spsc_queue.hpp:265:14: warning: use of ‘std::hardware_destructive_interference_size’ [-Winterference-size]
+  265 |         std::hardware_destructive_interference_size;
+      |         ~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+../../engine/src/spsc_queue.hpp:265:14: note: its value can vary between compiler versions or with different ‘-mtune’ or ‘-mcpu’ flags
+../../engine/src/spsc_queue.hpp:265:14: note: if this use is part of a public ABI, change it to instead use a constant variable you define
+../../engine/src/spsc_queue.hpp:265:14: note: the default value for the current CPU tuning is 64 bytes
+../../engine/src/spsc_queue.hpp:265:14: note: you can stabilize this value with ‘--param hardware_destructive_interference_size=64’, or disable this warning with ‘-Wno-interference-size’
+2025/12/25 15:20:22 Database initialized successfully (SQLite)
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /api/auth/login           --> seckillapp/router.SetupRouter.func1 (2 handlers)
+[GIN-debug] POST   /api/auth/register        --> seckillapp/router.SetupRouter.func2 (2 handlers)
+[GIN-debug] POST   /api/seckill/enqueue      --> seckillapp/handler.EnqueueHandler (2 handlers)
+[GIN-debug] GET    /api/admin/stats          --> seckillapp/handler.StatsHandler (2 handlers)
+Failed to open WAL file: No such file or directory
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  Failed to open WAL file: data/worker_0.wal
+SIGABRT: abort
+PC=0x71f30769eb2c m=0 sigcode=18446744073709551610
+signal arrived during cgo execution
+
+goroutine 1 gp=0xc000002380 m=0 mp=0x1adb6c0 [syscall]:
+runtime.cgocall(0xebc3b0, 0xc000055e48)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/cgocall.go:167 +0x4b fp=0xc000055e20 sp=0xc000055de8 pc=0x47d88b
+seckillapp/handler._Cfunc_InitEngine()
+	_cgo_gotypes.go:175 +0x3a fp=0xc000055e48 sp=0xc000055e20 pc=0xe5543a
+seckillapp/handler.StartConsumer()
+	/home/powaikit/dev/master/backend/handler/seckill.go:38 +0x17 fp=0xc000055e68 sp=0xc000055e48 pc=0xe55557
+main.main()
+	/home/powaikit/dev/master/backend/main.go:24 +0x45 fp=0xc000055f50 sp=0xc000055e68 pc=0xe56cc5
+runtime.main()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:285 +0x29d fp=0xc000055fe0 sp=0xc000055f50 pc=0x44c63d
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc000055fe8 sp=0xc000055fe0 pc=0x488c21
+
+goroutine 2 gp=0xc000002e00 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000090fa8 sp=0xc000090f88 pc=0x480b6e
+runtime.goparkunlock(...)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:466
+runtime.forcegchelper()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:373 +0xb3 fp=0xc000090fe0 sp=0xc000090fa8 pc=0x44c973
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc000090fe8 sp=0xc000090fe0 pc=0x488c21
+created by runtime.init.7 in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:361 +0x1a
+
+goroutine 3 gp=0xc000003340 m=nil [GC sweep wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000091780 sp=0xc000091760 pc=0x480b6e
+runtime.goparkunlock(...)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:466
+runtime.bgsweep(0xc00004c100)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgcsweep.go:279 +0x94 fp=0xc0000917c8 sp=0xc000091780 pc=0x4367f4
+runtime.gcenable.gowrap1()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgc.go:212 +0x25 fp=0xc0000917e0 sp=0xc0000917c8 pc=0x42a845
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc0000917e8 sp=0xc0000917e0 pc=0x488c21
+created by runtime.gcenable in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgc.go:212 +0x66
+
+goroutine 4 gp=0xc000003500 m=nil [GC scavenge wait]:
+runtime.gopark(0xc00004c100?, 0x13400a8?, 0x1?, 0x0?, 0xc000003500?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000091f78 sp=0xc000091f58 pc=0x480b6e
+runtime.goparkunlock(...)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:466
+runtime.(*scavengerState).park(0x1ad9760)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgcscavenge.go:425 +0x49 fp=0xc000091fa8 sp=0xc000091f78 pc=0x4342c9
+runtime.bgscavenge(0xc00004c100)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgcscavenge.go:653 +0x3c fp=0xc000091fc8 sp=0xc000091fa8 pc=0x43485c
+runtime.gcenable.gowrap2()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgc.go:213 +0x25 fp=0xc000091fe0 sp=0xc000091fc8 pc=0x42a7e5
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc000091fe8 sp=0xc000091fe0 pc=0x488c21
+created by runtime.gcenable in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mgc.go:213 +0xa5
+
+goroutine 5 gp=0xc000003a40 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000092788 sp=0xc000092768 pc=0x480b6e
+runtime.goparkunlock(...)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:466
+runtime.updateMaxProcsGoroutine()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:6720 +0xe7 fp=0xc0000927e0 sp=0xc000092788 pc=0x45a947
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc0000927e8 sp=0xc0000927e0 pc=0x488c21
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:6708 +0x37
+
+goroutine 6 gp=0xc0000de000 m=nil [finalizer wait]:
+runtime.gopark(0x45b915?, 0x4221a5?, 0xb8?, 0x1?, 0xc000002380?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000090620 sp=0xc000090600 pc=0x480b6e
+runtime.runFinalizers()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mfinal.go:210 +0x107 fp=0xc0000907e0 sp=0xc000090620 pc=0x429747
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc0000907e8 sp=0xc0000907e0 pc=0x488c21
+created by runtime.createfing in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mfinal.go:172 +0x3d
+
+goroutine 7 gp=0xc0000de540 m=nil [cleanup wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000092f68 sp=0xc000092f48 pc=0x480b6e
+runtime.goparkunlock(...)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:466
+runtime.(*cleanupQueue).dequeue(0x1ad9a40)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mcleanup.go:439 +0xc5 fp=0xc000092fa0 sp=0xc000092f68 pc=0x426965
+runtime.runCleanups()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mcleanup.go:635 +0x45 fp=0xc000092fe0 sp=0xc000092fa0 pc=0x427025
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc000092fe8 sp=0xc000092fe0 pc=0x488c21
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/mcleanup.go:589 +0xa5
+
+goroutine 8 gp=0xc0000de700 m=nil [select]:
+runtime.gopark(0xc000093788?, 0x2?, 0x0?, 0x0?, 0xc000093784?)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/proc.go:460 +0xce fp=0xc000093610 sp=0xc0000935f0 pc=0x480b6e
+runtime.selectgo(0xc000093788, 0xc000093780, 0x0?, 0x0, 0x0?, 0x1)
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/select.go:351 +0x8b7 fp=0xc000093750 sp=0xc000093610 pc=0x45f257
+database/sql.(*DB).connectionOpener(0xc0002fa9c0, {0x134ec00, 0xc000274d20})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/database/sql/sql.go:1261 +0x87 fp=0xc0000937b8 sp=0xc000093750 pc=0x80bb67
+database/sql.OpenDB.gowrap1()
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/database/sql/sql.go:841 +0x28 fp=0xc0000937e0 sp=0xc0000937b8 pc=0x809e08
+runtime.goexit({})
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/runtime/asm_amd64.s:1693 +0x1 fp=0xc0000937e8 sp=0xc0000937e0 pc=0x488c21
+created by database/sql.OpenDB in goroutine 1
+	/home/powaikit/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.25.5.linux-amd64/src/database/sql/sql.go:841 +0x130
+
+rax    0x0
+rbx    0x136b9
+rcx    0x71f30769eb2c
+rdx    0x6
+rdi    0x136b9
+rsi    0x136b9
+rbp    0x7ffcaa487330
+rsp    0x7ffcaa4872f0
+r8     0x0
+r9     0x7ffcaa486e80
+r10    0x8
+r11    0x246
+r12    0x6
+r13    0x2b771a10
+r14    0x16
+r15    0x7ffcaa487560
+rip    0x71f30769eb2c
+rflags 0x246
+cs     0x33
+fs     0x0
+gs     0x0
+exit status 2
