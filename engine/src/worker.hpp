@@ -62,9 +62,9 @@ public:
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
         
-        // MPMC queue for this worker
+        // SPSC queue for this worker (Dispatcher -> Worker is 1:1)
         // Capacity 16K
-        queue_ = std::make_unique<MpmcQueue<WorkerRequest>>(16384);
+        queue_ = std::make_unique<SpscQueue<WorkerRequest>>(16384);
 
         // Initialize WAL
         // Ensure "data" directory exists in the running directory (backend/)
