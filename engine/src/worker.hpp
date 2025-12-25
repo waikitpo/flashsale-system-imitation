@@ -9,6 +9,7 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <cstring> // For std::memset
 
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #include <immintrin.h>
@@ -55,8 +56,8 @@ struct WorkerRequest {
 
 class Worker {
 public:
-    Worker(int id, std::atomic<uint64_t>& global_sold_counter, MpmcQueue<CSeckillResult>* result_queue) 
-        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue) {
+    Worker(int id, std::atomic<uint64_t>& global_sold_counter, MpmcQueue<CSeckillResult>* result_queue, std::atomic<uint64_t>* barrier_count = nullptr) 
+        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue), barrier_count_(barrier_count) {
         // Initialize mock inventory
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
@@ -122,6 +123,9 @@ public:
     int GetId() const { return id_; }
 
 private:
+    // Barrier Counter Reference
+    std::atomic<uint64_t>* barrier_count_;
+
     void Loop() {
         // Pin to core?
         // SetThreadAffinity(id_);
@@ -155,6 +159,14 @@ private:
     }
 
     void Process(const WorkerRequest& req) {
+        // 0. Barrier Check
+        if (req.request_id == UINT64_MAX) {
+            if (barrier_count_) {
+                barrier_count_->fetch_add(1, std::memory_order_release);
+            }
+            return;
+        }
+
         // 1. Idempotency Check
         if (IsDuplicate(req.request_id)) {
             return; 

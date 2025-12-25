@@ -14,6 +14,7 @@ import (
 	"seckillapp/metrics"
 	"seckillapp/model"
 	"strconv"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -32,6 +33,11 @@ var (
 	shutdownChan = make(chan struct{})
 	dbWorkerDone = make(chan struct{})
 	orderChan    chan model.Order
+
+	// Atomic Counters for Closed-Loop Shutdown
+	AcceptedRequests uint64
+	ResultsReceived  uint64
+	DBCommitted      uint64
 )
 
 // StartConsumer initializes the C++ engine.
@@ -71,6 +77,8 @@ loop:
 					Status:  1, // Created
 				}
 				// Push to Memory Buffer (Will block if full -> Backpressure)
+				atomic.AddUint64(&ResultsReceived, 1)
+				metrics.SetResultQueueDepth(uint64(len(orderChan)))
 				select {
 				case orderChan <- order:
 				case <-shutdownChan:
@@ -117,6 +125,7 @@ loop:
 				Qty:     int32(res.qty),
 				Status:  1, // Created
 			}
+			atomic.AddUint64(&ResultsReceived, 1)
 			orderChan <- order
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -135,6 +144,7 @@ loop:
 			Qty:     int32(res.qty),
 			Status:  1, // Created
 		}
+		atomic.AddUint64(&ResultsReceived, 1)
 		orderChan <- order
 	}
 	fmt.Println("Async Consumer: Queue drained. Closing channel.")
@@ -179,17 +189,20 @@ func flushBatch(batch *[]model.Order) {
 		return
 	}
 
-	// Bulk Insert
-	// Clauses(clause.OnConflict{DoNothing: true}) handles potential duplicates if we re-consume logs
-	// But since we use RequestID as Primary Key, we are safe.
+	metrics.SetDBBatchSize(uint64(len(*batch)))
+	start := time.Now()
+
+	// Bulk Insert with GORM
+	// Use OnConflict DoNothing for idempotency (at-least-once delivery)
+	// This generates a single INSERT ... VALUES (...), (...) query which is much faster than loop of Exec.
 	result := db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(batch)
+
 	if result.Error != nil {
-		// Log error, but don't stop.
-		// In production, you might want to retry or send to a Dead Letter Queue (DLQ)
-		// log.Printf("Failed to insert batch: %v", result.Error)
-		println("Failed to insert batch:", result.Error.Error())
+		fmt.Printf("Async DB: Insert failed: %v\n", result.Error)
 	} else {
 		// log.Printf("Async DB: Flushed %d orders", len(*batch))
+		atomic.AddUint64(&DBCommitted, uint64(len(*batch)))
+		metrics.SetDBCommitLatency(uint64(time.Since(start).Milliseconds()))
 	}
 
 	// Reset batch
@@ -204,10 +217,32 @@ func StopConsumer() {
 	C.WaitEngineDrained()
 	fmt.Println("Engine Drained.")
 
-	// 2. Continue draining result queue for a bit
-	// processResults is still running.
-	fmt.Println("Draining Result Queue (Wait 1s)...")
-	time.Sleep(1 * time.Second)
+	// 2. Wait for Closed Loop (ResultsReceived == AcceptedRequests)
+	fmt.Println("Waiting for Results to match Accepted Requests...")
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	lastLog := time.Now()
+
+	for {
+		accepted := atomic.LoadUint64(&AcceptedRequests)
+		received := atomic.LoadUint64(&ResultsReceived)
+
+		if received >= accepted {
+			if received > accepted {
+				fmt.Printf("WARNING: Received (%d) > Accepted (%d)\n", received, accepted)
+			}
+			break
+		}
+
+		if time.Since(lastLog) > 1*time.Second {
+			fmt.Printf("Shutdown Progress: Accepted=%d, Received=%d\n", accepted, received)
+			lastLog = time.Now()
+		}
+
+		<-ticker.C
+	}
+	fmt.Println("Results Drained.")
 
 	// 3. Stop Consumer (Signal shutdownChan)
 	fmt.Println("Stopping Consumer...")
@@ -215,7 +250,18 @@ func StopConsumer() {
 
 	// 4. Wait for DB Worker
 	<-dbWorkerDone
-	fmt.Println("DB Worker Finished.")
+
+	// Verify DB Commit
+	committed := atomic.LoadUint64(&DBCommitted)
+	accepted := atomic.LoadUint64(&AcceptedRequests)
+
+	fmt.Printf("DB Worker Finished. Committed=%d\n", committed)
+
+	if committed != accepted {
+		fmt.Printf("WARNING: Committed (%d) != Accepted (%d)\n", committed, accepted)
+	} else {
+		fmt.Println("Data Integrity Verified: Committed == Accepted")
+	}
 
 	// 5. Stop Engine (Join threads)
 	fmt.Println("Stopping C++ Engine...")
@@ -303,6 +349,7 @@ func EnqueueHandler(c *gin.Context) {
 	ret := C.EnqueueRequest(cReq)
 	if ret == 1 {
 		metrics.AddEnqueueOK()
+		atomic.AddUint64(&AcceptedRequests, 1)
 		// Return 202 Accepted immediately
 		c.JSON(http.StatusAccepted, gin.H{
 			"msg":        "Enqueued",

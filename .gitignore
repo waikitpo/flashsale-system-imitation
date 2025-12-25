@@ -1,0 +1,18 @@
+# Binaries
+backend_app
+*.o
+*.so
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+*.wal
+data/
+
+# Logs
+*.log
+*.txt
+
+# IDE
+.vscode/

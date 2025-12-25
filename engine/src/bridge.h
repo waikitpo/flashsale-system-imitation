@@ -34,10 +34,23 @@ int EnqueueRequest(CSeckillRequest req);
 // Batch enqueue. Returns number of requests enqueued.
 int EnqueueBatch(CSeckillRequest* reqs, int count);
 
+// Enqueue a barrier with a sequence number
+void EnqueueBarrier(uint64_t seq);
+
 // Wait until engine is fully drained (Input Empty + Workers Idle)
 void WaitEngineDrained();
 
-// Stop the engine
+// Wait for a Barrier Event with sequence number
+// Blocks until all requests <= seq are processed and results enqueued.
+void WaitBarrier(uint64_t seq);
+
+// Request engine stop (set flag, stop dispatcher)
+void RequestStop();
+
+// Join engine threads (wait for workers)
+void JoinEngine();
+
+// Stop the engine (RequestStop + JoinEngine)
 void StopEngine();
 
 // Get total sold count (for stats)

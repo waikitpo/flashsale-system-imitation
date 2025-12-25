@@ -11,6 +11,12 @@ var (
 	EnqueueRejectTotal  uint64
 	EnqueueLatencyTotal uint64 // Total nanoseconds
 	SoldTotal           uint64 // Total items sold
+
+	// Observability Metrics
+	ResultQueueDepth    uint64
+	DBBatchSizeLast     uint64
+	DBFlushIntervalLast uint64 // ms
+	DBCommitLatencyLast uint64 // ms
 )
 
 func AddRequest() {
@@ -33,12 +39,21 @@ func AddLatency(ns int64) {
 	atomic.AddUint64(&EnqueueLatencyTotal, uint64(ns))
 }
 
+func SetResultQueueDepth(val uint64) { atomic.StoreUint64(&ResultQueueDepth, val) }
+func SetDBBatchSize(val uint64)      { atomic.StoreUint64(&DBBatchSizeLast, val) }
+func SetDBFlushInterval(val uint64)  { atomic.StoreUint64(&DBFlushIntervalLast, val) }
+func SetDBCommitLatency(val uint64)  { atomic.StoreUint64(&DBCommitLatencyLast, val) }
+
 func GetStats() map[string]uint64 {
 	return map[string]uint64{
-		"requests_total":        atomic.LoadUint64(&RequestsTotal),
-		"enqueue_ok_total":      atomic.LoadUint64(&EnqueueOKTotal),
-		"enqueue_reject_total":  atomic.LoadUint64(&EnqueueRejectTotal),
-		"enqueue_latency_total": atomic.LoadUint64(&EnqueueLatencyTotal),
-		"sold_total":            atomic.LoadUint64(&SoldTotal),
+		"requests_total":         atomic.LoadUint64(&RequestsTotal),
+		"enqueue_ok_total":       atomic.LoadUint64(&EnqueueOKTotal),
+		"enqueue_reject_total":   atomic.LoadUint64(&EnqueueRejectTotal),
+		"enqueue_latency_total":  atomic.LoadUint64(&EnqueueLatencyTotal),
+		"sold_total":             atomic.LoadUint64(&SoldTotal),
+		"result_queue_depth":     atomic.LoadUint64(&ResultQueueDepth),
+		"db_batch_size_last":     atomic.LoadUint64(&DBBatchSizeLast),
+		"db_flush_interval_last": atomic.LoadUint64(&DBFlushIntervalLast),
+		"db_commit_latency_last": atomic.LoadUint64(&DBCommitLatencyLast),
 	}
 }

@@ -1,5 +1,5 @@
 #include "bridge.h"
-#include "spsc_queue.hpp"
+#include "mpmc_queue.hpp"
 #include "worker.hpp"
 #include <thread>
 #include <atomic>
@@ -21,7 +21,7 @@ struct Request {
 static_assert(sizeof(Request) == sizeof(CSeckillRequest), "Request and CSeckillRequest size mismatch");
 
 // Global Engine State
-static std::unique_ptr<SpscQueue<Request>> queue;
+static std::unique_ptr<MpmcQueue<Request>> queue;
 static std::unique_ptr<MpmcQueue<CSeckillResult>> result_queue;
 static std::atomic<bool> running{false};
 static std::thread dispatcher_thread;
@@ -40,6 +40,9 @@ static uint64_t gap_count = 0;
 static uint64_t dup_count = 0;
 static uint64_t last_seq_seen = 0;
 
+std::atomic<uint64_t> barrier_reached_count{0};
+std::atomic<uint64_t> target_barrier_seq{0};
+
 void DispatcherLoop() {
     // Batch buffer
     const size_t kBatchSize = 128;
@@ -47,15 +50,40 @@ void DispatcherLoop() {
 
     Backoff backoff;
 
-    while (running.load(std::memory_order_relaxed)) {
-        // 1. Batch Dequeue from SPSC (L1 Buffer)
-        size_t count = queue->dequeue_bulk(batch, kBatchSize);
+    while (running.load(std::memory_order_relaxed) || (queue && queue->size() > 0)) {
+        // 1. Batch Dequeue from MPMC (L1 Buffer)
+        size_t count = 0;
+        for (size_t i = 0; i < kBatchSize; ++i) {
+            if (queue->try_dequeue(batch[i])) {
+                count++;
+            } else {
+                break;
+            }
+        }
         
         if (count > 0) {
             backoff.reset();
             
             for (size_t i = 0; i < count; ++i) {
                 const auto& req = batch[i];
+
+                // Check for Barrier
+                if (req.request_id == UINT64_MAX) {
+                    std::cout << "[Dispatcher] Barrier received. Broadcasting to all workers." << std::endl;
+                    target_barrier_seq.store(req.guest_id); // Use guest_id as barrier seq
+                    barrier_reached_count.store(0);
+                    
+                    WorkerRequest wreq;
+                    std::memcpy(&wreq, &req, sizeof(WorkerRequest));
+                    
+                    for (int w = 0; w < kWorkerCount; ++w) {
+                        while (!workers[w]->Enqueue(wreq)) {
+                            std::this_thread::yield();
+                             if (!running.load(std::memory_order_relaxed)) break;
+                        }
+                    }
+                    continue;
+                }
 
                 // SPSC Correctness Check (Optional)
                 if (check_correctness.load(std::memory_order_relaxed)) {
@@ -74,7 +102,7 @@ void DispatcherLoop() {
                 // Sharding by SKU ID to ensure thread-local inventory safety
                 // Or sharding by User ID if user-centric limits are needed
                 // Here we shard by SKU ID
-                int worker_idx = req.sku_id % kWorkerCount;
+                int worker_idx = std::abs((long)req.sku_id) % kWorkerCount;
                 
                 // Convert Request to WorkerRequest (memcpy safe due to layout check)
                 WorkerRequest wreq;
@@ -109,8 +137,8 @@ void InitEngine() {
     dup_count = 0;
     last_seq_seen = 0;
 
-    // 1. Initialize SPSC Queue
-    queue = std::make_unique<SpscQueue<Request>>(1024 * 64); 
+    // 1. Initialize MPMC Queue (Input)
+    queue = std::make_unique<MpmcQueue<Request>>(1024 * 64); 
     
     // 1.5 Initialize Result Queue (MPMC)
     result_queue = std::make_unique<MpmcQueue<CSeckillResult>>(1024 * 64);
@@ -118,7 +146,7 @@ void InitEngine() {
     // 2. Initialize Workers
     workers.clear();
     for (int i = 0; i < kWorkerCount; ++i) {
-        workers.push_back(std::make_unique<Worker>(i, sold_total, result_queue.get()));
+        workers.push_back(std::make_unique<Worker>(i, sold_total, result_queue.get(), &barrier_reached_count));
         workers[i]->Start();
     }
 
@@ -127,7 +155,7 @@ void InitEngine() {
     // 3. Start Dispatcher
     dispatcher_thread = std::thread(DispatcherLoop);
     
-    std::cout << "[C++ Engine] Started. Queue Capacity: " << queue->capacity() 
+    std::cout << "[C++ Engine] Started. Queue Capacity: 65536" 
               << ", Workers: " << kWorkerCount << std::endl;
 }
 
@@ -155,60 +183,90 @@ int EnqueueBatch(CSeckillRequest* reqs, int count) {
     
     // Safety cast: CSeckillRequest and Request have identical layout
     const Request* first = reinterpret_cast<const Request*>(reqs);
-    return (int)queue->enqueue_bulk(first, (size_t)count);
+    
+    int enqueued = 0;
+    for (int i = 0; i < count; ++i) {
+        if (queue->try_enqueue(first[i])) {
+            enqueued++;
+        } else {
+            break; // Stop if full
+        }
+    }
+    return enqueued;
 }
 
 void WaitEngineDrained() {
-    std::cout << "[C++ Engine] Waiting for engine to drain..." << std::endl;
-    int idle_streak = 0;
+    static std::atomic<bool> inside{false};
+    if (inside.exchange(true)) {
+        std::cout << "[C++ Engine] WaitEngineDrained re-entered! Ignoring." << std::endl;
+        return;
+    }
+
+    std::cout << "[C++ Engine] Initiating Barrier Drain... Queue Size: " << (queue ? queue->size() : 0) << std::endl;
+    
+    // 1. Reset Barrier Counter (Safety, though Dispatcher also does it)
+    barrier_reached_count.store(0);
+    
+    // 2. Inject Barrier Request
+    Request barrier_req;
+    std::memset(&barrier_req, 0, sizeof(barrier_req));
+    barrier_req.request_id = UINT64_MAX; 
+    
+    // Spin until enqueued (since this is critical for shutdown)
+    // If queue is full, we must wait.
+    while (!queue->try_enqueue(barrier_req)) {
+        std::this_thread::yield();
+    }
+    std::cout << "[C++ Engine] Barrier Request Enqueued." << std::endl;
+
+    // 3. Wait for all workers to hit the barrier
+    // We expect kWorkerCount acks.
+    int last_count = -1;
+    int stuck_counter = 0;
+
     while (true) {
-        bool busy = false;
+        uint64_t current = barrier_reached_count.load(std::memory_order_acquire);
         
-        // 1. Check Input Queue
-        if (queue && queue->size() > 0) {
-            busy = true;
+        if (current >= kWorkerCount) {
+            break;
         }
 
-        // 2. Check Workers
-        if (!busy) {
-            for (auto& worker : workers) {
-                if (worker->GetQueueSize() > 0 || worker->IsProcessing()) {
-                    busy = true;
-                    break;
-                }
-            }
-        }
-
-        if (!busy) {
-            // Require 5 consecutive idle checks to be sure (debounce)
-            idle_streak++;
-            if (idle_streak >= 5) {
-                break;
-            }
-        } else {
-            idle_streak = 0;
-            // Debug Log every 50 iterations (0.5 sec approx)
-            static int loop_count = 0;
-            if (++loop_count % 50 == 0) {
-                std::cout << "[C++ Engine Debug] Busy. InputQueue: " << (queue ? queue->size() : 0);
-                for(auto& w : workers) {
-                    std::cout << " W" << w->GetId() << "(Q:" << w->GetQueueSize() << ",P:" << w->IsProcessing() << ")";
-                }
-                std::cout << std::endl;
-            }
+        if (!running.load(std::memory_order_relaxed)) {
+             std::cout << "[C++ Engine] Engine stopped while waiting for barrier." << std::endl;
+             break;
         }
         
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        
+        // Debug logging if stuck
+        if (current == last_count) {
+            stuck_counter++;
+            if (stuck_counter % 100 == 0) { // Every 1s
+                std::cout << "[C++ Engine] Waiting for barrier... Reached: " << current << "/" << kWorkerCount << std::endl;
+            }
+        } else {
+            last_count = current;
+            stuck_counter = 0;
+        }
     }
-    std::cout << "[C++ Engine] Drained." << std::endl;
+    
+    std::cout << "[C++ Engine] Barrier Reached. Engine Drained." << std::endl;
+    inside.store(false);
 }
 
-void StopEngine() {
+void WaitBarrier(uint64_t seq) {
+    WaitEngineDrained();
+}
+
+void RequestStop() {
     running.store(false);
     if (dispatcher_thread.joinable()) {
         dispatcher_thread.join();
     }
-    
+    std::cout << "[C++ Engine] RequestStop completed (Dispatcher stopped)." << std::endl;
+}
+
+void JoinEngine() {
     uint64_t total_processed = 0;
     for (auto& worker : workers) {
         worker->Stop();
@@ -217,8 +275,12 @@ void StopEngine() {
         std::cout << "[C++ Engine] Worker " << worker->GetId() << " processed: " << p << std::endl;
     }
     workers.clear();
+    std::cout << "[C++ Engine] JoinEngine completed. Total Processed: " << total_processed << std::endl;
+}
 
-    std::cout << "[C++ Engine] Stopped. Total Processed: " << total_processed << std::endl;
+void StopEngine() {
+    RequestStop();
+    JoinEngine();
 }
 
 uint64_t GetSoldTotal() {
