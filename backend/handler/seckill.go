@@ -101,8 +101,8 @@ loop:
 					// We must rollback Redis because we already decremented it.
 					if cache.Rdb != nil {
 						go func(sku int64, guest uint64, q int, rID uint64) {
-							cache.RollbackInventory(sku, guest, q)
-							cache.RemovePendingRequest(sku, guest, q, rID)
+							cache.RollbackInventory(sku, guest, q, rID)
+							// RemovePendingRequest is handled inside RollbackInventory
 							fmt.Printf("Rolled back Req %d (Status 2: SoldOut from Engine)\n", rID)
 						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
 					}
@@ -113,8 +113,8 @@ loop:
 						go func(sku int64, guest uint64, q int, rID uint64) {
 							// fmt.Printf("DEBUG: Simulating Crash... Sleeping 60s before rollback for Req %d\n", rID)
 							// time.Sleep(60 * time.Second)
-							cache.RollbackInventory(sku, guest, q)
-							cache.RemovePendingRequest(sku, guest, q, rID)
+							cache.RollbackInventory(sku, guest, q, rID)
+							// RemovePendingRequest is handled inside RollbackInventory
 							fmt.Printf("Rolled back Req %d (Status %d: Internal Failure)\n", rID, status)
 						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
 					}
@@ -305,7 +305,7 @@ func EnqueueHandler(c *gin.Context) {
 
 	// 2.5 Redis Pre-check (Distributed Gatekeeper)
 	if cache.Rdb != nil {
-		status, err := cache.DeductInventory(req.SkuID, req.GuestID, req.Qty)
+		status, err := cache.DeductInventory(req.SkuID, req.GuestID, req.Qty, req.RequestID)
 		if err != nil {
 			fmt.Printf("Redis Error: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "System Error"})
@@ -324,16 +324,10 @@ func EnqueueHandler(c *gin.Context) {
 			return
 		}
 		// status == 1: Success -> Proceed to C++ Engine
-		// 2.6 Mark as Pending (In-Flight) for Crash Recovery
-		err = cache.MarkRequestPending(req.SkuID, req.GuestID, req.Qty, req.RequestID)
-		if err != nil {
-			// If we can't mark it, we should probably fail or rollback immediately?
-			// For now, log and proceed (risk of inconsistency if crash) or rollback.
-			// Safer: Rollback and fail.
-			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "System Error (Pending Log)"})
-			return
-		}
+		// Pending Log is now handled atomically inside DeductInventory (Lua)
+
+		// Register SKU for Sweeper (Best Effort)
+		cache.Rdb.SAdd(cache.Ctx, "seckill:skus", req.SkuID)
 	}
 
 	// 3. Enqueue to C++ Engine
@@ -351,8 +345,8 @@ func EnqueueHandler(c *gin.Context) {
 		// Queue Full - Rollback Redis!
 		metrics.AddEnqueueReject()
 		if cache.Rdb != nil {
-			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty)
-			cache.RemovePendingRequest(req.SkuID, req.GuestID, req.Qty, req.RequestID)
+			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty, req.RequestID)
+			// RemovePendingRequest is handled inside RollbackInventory Lua script
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Queue full"})
 	}
@@ -379,41 +373,49 @@ func StartSweeper() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Timeout: 30 seconds. If a request is pending for > 30s, assume crash/loss.
-		staleMembers, err := cache.GetStalePendingRequests(30)
+		// 1. Get Active SKUs
+		skus, err := cache.Rdb.SMembers(cache.Ctx, "seckill:skus").Result()
 		if err != nil {
-			fmt.Printf("Sweeper: Error getting stale requests: %v\n", err)
+			// fmt.Printf("Sweeper: Error getting active SKUs: %v\n", err) // Benign if set is empty or redis transient
 			continue
 		}
 
-		for _, member := range staleMembers {
-			// Format: "sku:user:qty:reqID"
-			var sku int64
-			var user, reqID uint64
-			var qty int
-			n, err := fmt.Sscanf(member, "%d:%d:%d:%d", &sku, &user, &qty, &reqID)
-			if err != nil || n != 4 {
-				fmt.Printf("Sweeper: Invalid member format '%s': %v. Removing.\n", member, err)
-				cache.Rdb.ZRem(cache.Ctx, cache.PendingKey, member)
+		for _, skuStr := range skus {
+			skuID, _ := strconv.ParseInt(skuStr, 10, 64)
+
+			// Timeout: 30 seconds. If a request is pending for > 30s, assume crash/loss.
+			staleMembers, err := cache.GetStalePendingRequests(skuID, 30)
+			if err != nil {
+				// fmt.Printf("Sweeper: Error getting stale requests for SKU %d: %v\n", skuID, err)
 				continue
 			}
 
-			fmt.Printf("Sweeper: Found stale request %d (User %d, SKU %d). Rolling back...\n", reqID, user, sku)
+			for _, member := range staleMembers {
+				// Format: "sku:user:qty:reqID"
+				var sku int64
+				var user, reqID uint64
+				var qty int
+				n, err := fmt.Sscanf(member, "%d:%d:%d:%d", &sku, &user, &qty, &reqID)
+				if err != nil || n != 4 {
+					fmt.Printf("Sweeper: Invalid member format '%s': %v. Removing.\n", member, err)
+					// Manually remove invalid member from its ZSET
+					cache.RemovePendingRequest(skuID, 0, 0, 0) // HACK: RemovePendingRequest constructs key from SKU. But member is needed.
+					// We need a raw ZRem helper or just fix RemovePendingRequest to take raw member?
+					// Let's just ignore for now or use Rdb directly.
+					cache.Rdb.ZRem(cache.Ctx, fmt.Sprintf("seckill:{%d}:pending", skuID), member)
+					continue
+				}
 
-			// Rollback Inventory
-			err = cache.RollbackInventory(sku, user, qty)
-			if err != nil {
-				fmt.Printf("Sweeper: Failed to rollback request %d: %v\n", reqID, err)
-				// Don't remove if rollback failed? Or move to dead letter?
-				// RollbackInventory already handles retries and dead letter.
-				// So we can assume it's handled (or permanently failed).
-				// We should remove it from Pending to avoid infinite loop of trying to rollback?
-				// Yes, if it went to dead letter, we remove from pending.
+				fmt.Printf("Sweeper: Found stale request %d (User %d, SKU %d). Rolling back...\n", reqID, user, sku)
+
+				// Rollback Inventory (handles ZREM internally)
+				err = cache.RollbackInventory(sku, user, qty, reqID)
+				if err != nil {
+					fmt.Printf("Sweeper: Failed to rollback request %d: %v\n", reqID, err)
+				} else {
+					fmt.Printf("Sweeper: Rolled back and removed request %d\n", reqID)
+				}
 			}
-
-			// Remove from Pending
-			cache.RemovePendingRequest(sku, user, qty, reqID)
-			fmt.Printf("Sweeper: Rolled back and removed request %d\n", reqID)
 		}
 	}
 }

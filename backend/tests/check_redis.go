@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"os"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -13,7 +14,7 @@ func main() {
 		Addr: "localhost:6379",
 	})
 
-	key := "seckill:stock:777"
+	key := "seckill:{777}:stock"
 	val, err := rdb.Get(ctx, key).Result()
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)

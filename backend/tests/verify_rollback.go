@@ -23,8 +23,15 @@ func main() {
 	})
 
 	// Check Initial Inventory
-	key := fmt.Sprintf("seckill:stock:%d", SKU_ID)
+	key := fmt.Sprintf("seckill:{%d}:stock", SKU_ID)
 	val, err := rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		fmt.Println("Initializing SKU 777 to 10 for test...")
+		rdb.Set(ctx, key, 10, 0)
+		rdb.Del(ctx, fmt.Sprintf("seckill:{%d}:bought", SKU_ID))
+		val = "10"
+		err = nil
+	}
 	if err != nil {
 		fmt.Printf("Error getting initial inventory: %v\n", err)
 		fmt.Println("Ensure backend is running and initialized with SKU 777.")
