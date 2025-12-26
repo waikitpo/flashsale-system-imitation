@@ -37,6 +37,7 @@ var (
 	// Atomic Counters for Closed-Loop Shutdown
 	AcceptedRequests uint64
 	ResultsReceived  uint64
+	ResultsSoldOut   uint64
 	DBCommitted      uint64
 )
 
@@ -67,22 +68,30 @@ loop:
 		default:
 			if C.PollResult(&res) != 0 {
 				// Convert C struct to Go Model
-				order := model.Order{
-					ID:      uint64(res.request_id),
-					SkuID:   int64(res.sku_id),
-					GuestID: uint64(res.guest_id),
-					Qty:     int32(res.qty),
-					Status:  1, // Created
-				}
-				// Push to Memory Buffer (Will block if full -> Backpressure)
+				status := int(res.status)
+
+				// Always increment ResultsReceived for closed-loop shutdown
 				atomic.AddUint64(&ResultsReceived, 1)
-				metrics.SetResultQueueDepth(uint64(len(orderChan)))
-				select {
-				case orderChan <- order:
-				case <-shutdownChan:
-					fmt.Println("Async Consumer: Shutdown signal received while pushing")
-					orderChan <- order
-					break loop
+
+				if status == 1 {
+					order := model.Order{
+						ID:      uint64(res.request_id),
+						SkuID:   int64(res.sku_id),
+						GuestID: uint64(res.guest_id),
+						Qty:     int32(res.qty),
+						Status:  1, // Created
+					}
+					// Push to Memory Buffer (Will block if full -> Backpressure)
+					metrics.SetResultQueueDepth(uint64(len(orderChan)))
+					select {
+					case orderChan <- order:
+					case <-shutdownChan:
+						fmt.Println("Async Consumer: Shutdown signal received while pushing")
+						orderChan <- order
+						break loop
+					}
+				} else if status == 2 {
+					atomic.AddUint64(&ResultsSoldOut, 1)
 				}
 			} else {
 				// Sleep briefly to avoid busy loop if queue is empty
@@ -104,6 +113,11 @@ loop:
 		C.GetEngineStatus(&pendingInput, &activeWorkers, &pendingOutput)
 
 		fmt.Printf("Engine Status - Input: %d, Active: %d, Output: %d\n", pendingInput, activeWorkers, pendingOutput)
+		fmt.Printf("Metrics - Accepted: %d, Received: %d, SoldOut: %d, Committed: %d\n",
+			atomic.LoadUint64(&AcceptedRequests),
+			atomic.LoadUint64(&ResultsReceived),
+			atomic.LoadUint64(&ResultsSoldOut),
+			atomic.LoadUint64(&DBCommitted))
 
 		if pendingInput == 0 && activeWorkers == 0 && pendingOutput == 0 {
 			idleCounter++

@@ -15,8 +15,8 @@ import (
 
 // Config
 const (
-	TotalRequests = 100000
-	Concurrency   = 50
+	TotalRequests = 20000
+	Concurrency   = 100
 	TargetURL     = "http://localhost:3000/api/seckill/enqueue"
 	WarmupCount   = 100 // 预热请求数
 )
@@ -56,7 +56,7 @@ func main() {
 	}
 
 	// Pre-allocate payload
-	jsonBody := []byte(`{"sku_id":123,"qty":1}`)
+	jsonBody := []byte(`{"sku_id":999,"qty":1}`)
 
 	// Latency collector (buffered to avoid locking too much)
 	latencies := make(chan int64, TotalRequests)
@@ -69,8 +69,9 @@ func main() {
 	fmt.Println("Warming up...")
 
 	// 2. 预热请求（建立HTTP长连接，避免首屏延迟干扰）
+	warmupBody := []byte(`{"sku_id":123,"qty":1}`) // Warmup with ample stock SKU
 	for i := 0; i < WarmupCount; i++ {
-		req, _ := http.NewRequest("POST", TargetURL, bytes.NewReader(jsonBody))
+		req, _ := http.NewRequest("POST", TargetURL, bytes.NewReader(warmupBody))
 		req.Header.Set("Content-Type", "application/json")
 		// Use special ID range for warmup to avoid polluting the 0-19999 range
 		req.Header.Set("X-Request-Id", fmt.Sprintf("%d", 20000+i))

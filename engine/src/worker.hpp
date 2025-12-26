@@ -62,6 +62,7 @@ public:
         // Initialize mock inventory
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
+        inventory_[999] = 100; // Overselling test: 100 items
         
         // SPSC queue for this worker (Dispatcher -> Worker is 1:1)
         // Capacity 16K
@@ -160,6 +161,15 @@ private:
             return; 
         }
 
+        // Prepare Result
+        CSeckillResult res;
+        std::memset(&res, 0, sizeof(res));
+        res.request_id = req.request_id;
+        res.sku_id = req.sku_id;
+        res.qty = req.qty;
+        res.guest_id = req.guest_id;
+        res.status = 0; // Default: Failed
+
         // 2. Inventory Check & Deduct
         auto it = inventory_.find(req.sku_id);
         if (it != inventory_.end()) {
@@ -167,26 +177,19 @@ private:
                 it->second -= req.qty;
                 sold_total_.fetch_add(req.qty, std::memory_order_relaxed);
                 
-                // 3. Write to WAL
+                // 3. Write to WAL (Only on success)
                 WriteToWal(req);
 
-                // 4. Notify Result
-                CSeckillResult res;
-                // Zero initialize to avoid garbage in padding
-                std::memset(&res, 0, sizeof(res));
-                
-                res.request_id = req.request_id;
-                res.sku_id = req.sku_id;
-                res.qty = req.qty;
-                res.guest_id = req.guest_id;
-                res.status = 1;
-                
-                // Backpressure: Spin until we can enqueue
-                Backoff backoff;
-                while (!result_queue_->try_enqueue(res)) {
-                    backoff.pause();
-                }
+                res.status = 1; // Success
+            } else {
+                res.status = 2; // Sold Out
             }
+        }
+
+        // 4. Notify Result (Success or Failure)
+        Backoff backoff;
+        while (!result_queue_->try_enqueue(res)) {
+            backoff.pause();
         }
     }
 
