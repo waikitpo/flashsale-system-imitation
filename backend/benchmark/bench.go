@@ -15,7 +15,7 @@ import (
 
 // Config
 const (
-	TotalRequests = 20000
+	TotalRequests = 100000
 	Concurrency   = 50
 	TargetURL     = "http://localhost:3000/api/seckill/enqueue"
 	WarmupCount   = 100 // 预热请求数
@@ -75,7 +75,7 @@ func main() {
 		// Use special ID range for warmup to avoid polluting the 0-19999 range
 		req.Header.Set("X-Request-Id", fmt.Sprintf("%d", 20000+i))
 		req.Header.Set("X-Guest-Id", fmt.Sprintf("%d", rand.Int63()))
-		
+
 		resp, err := client.Do(req)
 		if err == nil {
 			io.Copy(ioutil.Discard, resp.Body)

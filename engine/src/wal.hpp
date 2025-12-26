@@ -35,22 +35,10 @@ public:
     // Append raw data to the log
     // Returns true on success
     bool Append(const void* data, size_t len) {
-        // For higher throughput, we might want to buffer in userspace before writing syscall.
-        // But let's start with direct write for simplicity and safety.
-        // Or implement a simple buffer.
-        
-        if (buffer_pos_ + len > kBufferSize) {
-            if (!Flush()) return false;
-        }
-
-        if (len > kBufferSize) {
-            // Large write, bypass buffer
-            return WriteRaw(data, len);
-        }
-
-        std::memcpy(buffer_ + buffer_pos_, data, len);
-        buffer_pos_ += len;
-        return true;
+        // Direct write to kernel buffer (OS Page Cache).
+        // This survives application crash (kill -9), but not OS crash/power loss.
+        // For OS crash safety, we would need Fsync() (much slower).
+        return WriteRaw(data, len);
     }
 
     // Force flush to kernel buffers (write syscall)

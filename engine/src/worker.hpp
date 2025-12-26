@@ -19,6 +19,7 @@
 
 #include "bridge.h" // For CSeckillRequest/Request struct
 #include "mpmc_queue.hpp"
+#include "spsc_queue.hpp"
 #include "wal.hpp"
 
 // Simple backoff strategy for spinning
@@ -68,22 +69,8 @@ public:
 
         // Initialize WAL
         // Ensure "data" directory exists in the running directory (backend/)
-        std::string wal_path = "data/worker_" + std::to_string(id) + ".wal";
-
-        // Recover from WAL
-        WalLogger::Recover<WalRecord>(wal_path, [this](const WalRecord& record) {
-            // Replay logic:
-            // 1. Restore Inventory
-            if (inventory_.find(record.sku_id) != inventory_.end()) {
-                inventory_[record.sku_id] -= record.qty;
-            }
-            // 2. Restore Idempotency Set
-            seen_requests_.insert(record.request_id);
-            // 3. Update global counter (approximate)
-            sold_total_.fetch_add(record.qty, std::memory_order_relaxed);
-        });
-
-        wal_ = std::make_unique<WalLogger>(wal_path);
+        wal_path_ = "data/worker_" + std::to_string(id) + ".wal";
+        wal_ = std::make_unique<WalLogger>(wal_path_);
     }
 
     void Start() {
@@ -124,6 +111,7 @@ public:
 
 private:
     // Barrier Counter Reference
+    std::string wal_path_;
     std::atomic<uint64_t>* barrier_count_;
 
     void Loop() {
@@ -193,11 +181,6 @@ private:
                 res.guest_id = req.guest_id;
                 res.status = 1;
                 
-                if (res.request_id > 100000) {
-                     std::cout << "[Worker Error] Suspicious RequestID: " << res.request_id 
-                               << " GuestID: " << res.guest_id << std::endl;
-                }
-
                 // Backpressure: Spin until we can enqueue
                 Backoff backoff;
                 while (!result_queue_->try_enqueue(res)) {
@@ -237,7 +220,7 @@ private:
     std::atomic<bool> running_;
     std::atomic<bool> is_processing_{false};
     std::thread thread_;
-    std::unique_ptr<MpmcQueue<WorkerRequest>> queue_;
+    std::unique_ptr<SpscQueue<WorkerRequest>> queue_;
     std::unique_ptr<WalLogger> wal_;
     MpmcQueue<CSeckillResult>* result_queue_;
     

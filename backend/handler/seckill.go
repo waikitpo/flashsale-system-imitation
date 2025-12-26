@@ -46,12 +46,10 @@ func StartConsumer() {
 	// Reset channels
 	shutdownChan = make(chan struct{})
 	dbWorkerDone = make(chan struct{})
-	// Memory Buffer with Backpressure
-	// 20000 is enough to hold all requests in memory if DB is slow,
-	// but to demonstrate backpressure we could make it smaller.
-	// Let's use 10000 to be safe but allow some backpressure if needed.
+	// Order Processing Channel
 	orderChan = make(chan model.Order, 10000)
 
+	// Shutdown Signals
 	go dbWorker()
 	go processResults()
 }
@@ -188,6 +186,11 @@ func flushBatch(batch *[]model.Order) {
 	if len(*batch) == 0 {
 		return
 	}
+
+	// Simulate Slow DB (Backpressure Test)
+	// 200ms per batch of 1000 = max 5,000 TPS
+	// Input is ~20,000 TPS -> Queue should fill up in ~13s
+	time.Sleep(200 * time.Millisecond)
 
 	metrics.SetDBBatchSize(uint64(len(*batch)))
 	start := time.Now()

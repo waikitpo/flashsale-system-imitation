@@ -69,7 +69,6 @@ void DispatcherLoop() {
 
                 // Check for Barrier
                 if (req.request_id == UINT64_MAX) {
-                    std::cout << "[Dispatcher] Barrier received. Broadcasting to all workers." << std::endl;
                     target_barrier_seq.store(req.guest_id); // Use guest_id as barrier seq
                     barrier_reached_count.store(0);
                     
@@ -138,10 +137,12 @@ void InitEngine() {
     last_seq_seen = 0;
 
     // 1. Initialize MPMC Queue (Input)
-    queue = std::make_unique<MpmcQueue<Request>>(1024 * 64); 
+    // Reduce to 1024 for Backpressure Test
+    queue = std::make_unique<MpmcQueue<Request>>(1024);
     
     // 1.5 Initialize Result Queue (MPMC)
-    result_queue = std::make_unique<MpmcQueue<CSeckillResult>>(1024 * 64);
+    // Reduce to 1024 for Backpressure Test
+    result_queue = std::make_unique<MpmcQueue<CSeckillResult>>(1024);
 
     // 2. Initialize Workers
     workers.clear();
