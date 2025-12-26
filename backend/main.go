@@ -17,6 +17,14 @@ import (
 
 func main() {
 	config.InitConfig()
+	// Override port from environment variable if present
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		// Ensure it has a colon prefix if just a number is provided
+		if envPort[0] != ':' {
+			envPort = ":" + envPort
+		}
+		config.AppConfig.App.Port = envPort
+	}
 	db.InitDB() // Initialize Database
 
 	// Initialize Redis

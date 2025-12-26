@@ -338,9 +338,17 @@ func EnqueueHandler(c *gin.Context) {
 	cReq.request_id = C.uint64_t(req.RequestID)
 
 	// Pass to C++ Ring Buffer
-	if C.EnqueueRequest(cReq) != 0 {
+	res := C.EnqueueRequest(cReq)
+	if res == 1 {
 		atomic.AddUint64(&AcceptedRequests, 1)
 		c.JSON(http.StatusAccepted, gin.H{"status": "queued", "request_id": reqID})
+	} else if res == 2 {
+		// Sold Out (Fast Fail)
+		metrics.AddEnqueueReject()
+		if cache.Rdb != nil {
+			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty, req.RequestID)
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": "Sold out"})
 	} else {
 		// Queue Full - Rollback Redis!
 		metrics.AddEnqueueReject()
