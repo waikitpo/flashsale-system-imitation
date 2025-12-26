@@ -57,12 +57,14 @@ struct WorkerRequest {
 
 class Worker {
 public:
-    Worker(int id, std::atomic<uint64_t>& global_sold_counter, MpmcQueue<CSeckillResult>* result_queue, std::atomic<uint64_t>* barrier_count = nullptr) 
-        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue), barrier_count_(barrier_count) {
+    Worker(int id, std::atomic<uint64_t>& global_sold_counter, MpmcQueue<CSeckillResult>* result_queue, std::atomic<uint64_t>* barrier_count, 
+           std::unordered_map<int64_t, std::atomic<bool>*> sold_out_flags) 
+        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue), barrier_count_(barrier_count), sold_out_flags_(sold_out_flags) {
         // Initialize mock inventory
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
         inventory_[999] = 100; // Overselling test: 100 items
+        inventory_[888] = 5;   // Flag Logic Regression Test: 5 items
         
         // SPSC queue for this worker (Dispatcher -> Worker is 1:1)
         // Capacity 16K
@@ -177,12 +179,29 @@ private:
                 it->second -= req.qty;
                 sold_total_.fetch_add(req.qty, std::memory_order_relaxed);
                 
+                // Check if sold out after deduction
+                if (it->second == 0) {
+                    auto flag_it = sold_out_flags_.find(req.sku_id);
+                    if (flag_it != sold_out_flags_.end()) {
+                        flag_it->second->store(true, std::memory_order_release);
+                    }
+                }
+
                 // 3. Write to WAL (Only on success)
                 WriteToWal(req);
 
                 res.status = 1; // Success
             } else {
-                res.status = 2; // Sold Out
+                res.status = 2; // Sold Out / Not Enough Stock
+                
+                // CRITICAL FIX: Only set global Sold Out flag if inventory is EXACTLY zero.
+                // If we have 5 items but request 10, we fail this request but MUST NOT blocking future requests for 1 item.
+                if (it->second == 0) {
+                    auto flag_it = sold_out_flags_.find(req.sku_id);
+                    if (flag_it != sold_out_flags_.end()) {
+                        flag_it->second->store(true, std::memory_order_release);
+                    }
+                }
             }
         }
 
@@ -231,4 +250,5 @@ private:
     std::unordered_map<int64_t, int> inventory_;
     std::unordered_set<uint64_t> seen_requests_;
     std::atomic<uint64_t> processed_count_{0};
+    std::unordered_map<int64_t, std::atomic<bool>*> sold_out_flags_;
 };

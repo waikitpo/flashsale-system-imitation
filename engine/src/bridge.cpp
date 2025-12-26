@@ -32,6 +32,8 @@ static const int kWorkerCount = 4; // Configurable
 
 // Global Stats
 static std::atomic<uint64_t> sold_total{0};
+// Sold Out Flags (Shared State)
+static std::unordered_map<int64_t, std::unique_ptr<std::atomic<bool>>> sold_out_store;
 
 // Correctness Check State (Still kept for SPSC verification)
 static std::atomic<bool> check_correctness{false};
@@ -144,10 +146,23 @@ void InitEngine() {
     // Reduce to 1024 for Backpressure Test
     result_queue = std::make_unique<MpmcQueue<CSeckillResult>>(1024);
 
+    // Initialize Sold Out Flags
+    sold_out_store.clear();
+    sold_out_store[123] = std::make_unique<std::atomic<bool>>(false);
+    sold_out_store[456] = std::make_unique<std::atomic<bool>>(false);
+    sold_out_store[999] = std::make_unique<std::atomic<bool>>(false);
+    sold_out_store[888] = std::make_unique<std::atomic<bool>>(false);
+
+    // Create map for workers (raw pointers)
+    std::unordered_map<int64_t, std::atomic<bool>*> worker_flags;
+    for (auto& kv : sold_out_store) {
+        worker_flags[kv.first] = kv.second.get();
+    }
+
     // 2. Initialize Workers
     workers.clear();
     for (int i = 0; i < kWorkerCount; ++i) {
-        workers.push_back(std::make_unique<Worker>(i, sold_total, result_queue.get(), &barrier_reached_count));
+        workers.push_back(std::make_unique<Worker>(i, sold_total, result_queue.get(), &barrier_reached_count, worker_flags));
         workers[i]->Start();
     }
 
@@ -171,6 +186,14 @@ int EnqueueRequest(CSeckillRequest creq) {
 
     if (req.request_id > 100000) {
         std::cout << "[Bridge Error] EnqueueRequest Suspicious ID: " << req.request_id << std::endl;
+    }
+
+    // Fast-Path: Check Sold Out Flag
+    auto it = sold_out_store.find(req.sku_id);
+    if (it != sold_out_store.end()) {
+        if (it->second->load(std::memory_order_acquire)) {
+            return 2; // Sold Out
+        }
     }
 
     if (queue->try_enqueue(req)) {

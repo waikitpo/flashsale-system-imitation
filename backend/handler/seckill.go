@@ -372,6 +372,12 @@ func EnqueueHandler(c *gin.Context) {
 			"msg":        "Enqueued",
 			"request_id": reqID,
 		})
+	} else if ret == 2 {
+		metrics.AddEnqueueReject() // Or new metric AddSoldOut?
+		// Direct Sold Out return
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Sold out",
+		})
 	} else {
 		metrics.AddEnqueueReject()
 		// Queue full -> 429 Too Many Requests

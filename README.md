@@ -67,3 +67,8 @@ go build -o backend_app .
 ```bash
 go run benchmark/bench.go
 ```
+
+## About the Frontend
+
+Under developing
+
