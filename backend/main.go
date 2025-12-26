@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"seckillapp/cache"
 	"seckillapp/config"
 	"seckillapp/db"
 	"seckillapp/handler"
@@ -17,6 +18,19 @@ import (
 func main() {
 	config.InitConfig()
 	db.InitDB() // Initialize Database
+
+	// Initialize Redis
+	// Default to localhost:6379, no password, DB 0
+	redisAddr := "localhost:6379"
+	if host := os.Getenv("REDIS_HOST"); host != "" {
+		redisAddr = host + ":6379"
+	}
+	cache.InitRedis(redisAddr, "", 0)
+
+	// Warm-up Inventory (Sync with C++ Engine)
+	// In production, this should read from DB.
+	cache.WarmUpInventory(888, 5)
+	cache.WarmUpInventory(999, 100)
 
 	r := router.SetupRouter()
 
@@ -53,7 +67,7 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown: ", err)
 	}
-	
+
 	// Stop Consumer AFTER HTTP server stops accepting requests
 	// This ensures no new requests are enqueued while we are draining
 	log.Println("Stopping consumer and draining queue...")

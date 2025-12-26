@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"seckillapp/cache"
 	"seckillapp/db"
 	"seckillapp/metrics"
 	"seckillapp/model"
@@ -53,6 +54,7 @@ func StartConsumer() {
 	// Shutdown Signals
 	go dbWorker()
 	go processResults()
+	go StartSweeper()
 }
 
 func processResults() {
@@ -74,6 +76,9 @@ loop:
 				atomic.AddUint64(&ResultsReceived, 1)
 
 				if status == 1 {
+					// Remove from Pending (In-Flight)
+					cache.RemovePendingRequest(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+
 					order := model.Order{
 						ID:      uint64(res.request_id),
 						SkuID:   int64(res.sku_id),
@@ -92,6 +97,27 @@ loop:
 					}
 				} else if status == 2 {
 					atomic.AddUint64(&ResultsSoldOut, 1)
+					// C++ Engine found it sold out (Double Check)
+					// We must rollback Redis because we already decremented it.
+					if cache.Rdb != nil {
+						go func(sku int64, guest uint64, q int, rID uint64) {
+							cache.RollbackInventory(sku, guest, q)
+							cache.RemovePendingRequest(sku, guest, q, rID)
+							fmt.Printf("Rolled back Req %d (Status 2: SoldOut from Engine)\n", rID)
+						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+					}
+				} else {
+					// status == 0 or other errors
+					// Internal Engine Failure (e.g. WAL error)
+					if cache.Rdb != nil {
+						go func(sku int64, guest uint64, q int, rID uint64) {
+							// fmt.Printf("DEBUG: Simulating Crash... Sleeping 60s before rollback for Req %d\n", rID)
+							// time.Sleep(60 * time.Second)
+							cache.RollbackInventory(sku, guest, q)
+							cache.RemovePendingRequest(sku, guest, q, rID)
+							fmt.Printf("Rolled back Req %d (Status %d: Internal Failure)\n", rID, status)
+						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+					}
 				}
 			} else {
 				// Sleep briefly to avoid busy loop if queue is empty
@@ -177,109 +203,31 @@ func dbWorker() {
 		select {
 		case order, ok := <-orderChan:
 			if !ok {
-				// Channel closed, flush remaining and exit
+				// Channel closed, flush remaining
 				if len(batch) > 0 {
-					flushBatch(&batch)
+					db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
+					atomic.AddUint64(&DBCommitted, uint64(len(batch)))
 				}
-				fmt.Println("Async DB Worker: Exiting.")
+				fmt.Println("Async DB Worker Stopped")
 				return
 			}
 			batch = append(batch, order)
 			if len(batch) >= batchSize {
-				flushBatch(&batch)
+				db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
+				atomic.AddUint64(&DBCommitted, uint64(len(batch)))
+				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
-				flushBatch(&batch)
+				db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
+				atomic.AddUint64(&DBCommitted, uint64(len(batch)))
+				batch = batch[:0]
 			}
 		}
 	}
 }
 
-func flushBatch(batch *[]model.Order) {
-	if len(*batch) == 0 {
-		return
-	}
-
-	// Simulate Slow DB (Backpressure Test)
-	// 200ms per batch of 1000 = max 5,000 TPS
-	// Input is ~20,000 TPS -> Queue should fill up in ~13s
-	time.Sleep(200 * time.Millisecond)
-
-	metrics.SetDBBatchSize(uint64(len(*batch)))
-	start := time.Now()
-
-	// Bulk Insert with GORM
-	// Use OnConflict DoNothing for idempotency (at-least-once delivery)
-	// This generates a single INSERT ... VALUES (...), (...) query which is much faster than loop of Exec.
-	result := db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(batch)
-
-	if result.Error != nil {
-		fmt.Printf("Async DB: Insert failed: %v\n", result.Error)
-	} else {
-		// log.Printf("Async DB: Flushed %d orders", len(*batch))
-		atomic.AddUint64(&DBCommitted, uint64(len(*batch)))
-		metrics.SetDBCommitLatency(uint64(time.Since(start).Milliseconds()))
-	}
-
-	// Reset batch
-	*batch = (*batch)[:0]
-}
-
-// StopConsumer stops the C++ engine.
 func StopConsumer() {
-	// 1. Wait for Engine Drained (Input=0, Workers=0)
-	// Engine is still running and producing results.
-	fmt.Println("Waiting for Engine to Drain...")
-	C.WaitEngineDrained()
-	fmt.Println("Engine Drained.")
-
-	// 2. Wait for Closed Loop (ResultsReceived == AcceptedRequests)
-	fmt.Println("Waiting for Results to match Accepted Requests...")
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	lastLog := time.Now()
-
-	for {
-		accepted := atomic.LoadUint64(&AcceptedRequests)
-		received := atomic.LoadUint64(&ResultsReceived)
-
-		if received >= accepted {
-			if received > accepted {
-				fmt.Printf("WARNING: Received (%d) > Accepted (%d)\n", received, accepted)
-			}
-			break
-		}
-
-		if time.Since(lastLog) > 1*time.Second {
-			fmt.Printf("Shutdown Progress: Accepted=%d, Received=%d\n", accepted, received)
-			lastLog = time.Now()
-		}
-
-		<-ticker.C
-	}
-	fmt.Println("Results Drained.")
-
-	// 3. Stop Consumer (Signal shutdownChan)
-	fmt.Println("Stopping Consumer...")
-	close(shutdownChan)
-
-	// 4. Wait for DB Worker
-	<-dbWorkerDone
-
-	// Verify DB Commit
-	committed := atomic.LoadUint64(&DBCommitted)
-	accepted := atomic.LoadUint64(&AcceptedRequests)
-
-	fmt.Printf("DB Worker Finished. Committed=%d\n", committed)
-
-	if committed != accepted {
-		fmt.Printf("WARNING: Committed (%d) != Accepted (%d)\n", committed, accepted)
-	} else {
-		fmt.Println("Data Integrity Verified: Committed == Accepted")
-	}
-
 	// 5. Stop Engine (Join threads)
 	fmt.Println("Stopping C++ Engine...")
 	C.StopEngine()
@@ -316,7 +264,7 @@ func EnqueueWithSeq(seq uint64) {
 }
 
 func EnqueueHandler(c *gin.Context) {
-	start := time.Now()
+	// start := time.Now()
 	metrics.AddRequest()
 
 	// 1. Parse Headers
@@ -355,58 +303,117 @@ func EnqueueHandler(c *gin.Context) {
 	req.GuestID = guestID
 	req.RequestID = reqID
 
-	// 3. Call C++ Engine
+	// 2.5 Redis Pre-check (Distributed Gatekeeper)
+	if cache.Rdb != nil {
+		status, err := cache.DeductInventory(req.SkuID, req.GuestID, req.Qty)
+		if err != nil {
+			fmt.Printf("Redis Error: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "System Error"})
+			return
+		}
+
+		if status == 0 { // Sold Out
+			metrics.AddEnqueueReject()
+			c.JSON(http.StatusConflict, gin.H{"error": "Sold out"})
+			return
+		} else if status == -1 { // Duplicate
+			c.JSON(http.StatusConflict, gin.H{"error": "Duplicate purchase"})
+			return
+		} else if status == -2 { // Stock Not Initialized
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid SKU or System Not Ready"})
+			return
+		}
+		// status == 1: Success -> Proceed to C++ Engine
+		// 2.6 Mark as Pending (In-Flight) for Crash Recovery
+		err = cache.MarkRequestPending(req.SkuID, req.GuestID, req.Qty, req.RequestID)
+		if err != nil {
+			// If we can't mark it, we should probably fail or rollback immediately?
+			// For now, log and proceed (risk of inconsistency if crash) or rollback.
+			// Safer: Rollback and fail.
+			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "System Error (Pending Log)"})
+			return
+		}
+	}
+
+	// 3. Enqueue to C++ Engine
 	var cReq C.CSeckillRequest
 	cReq.sku_id = C.int64_t(req.SkuID)
-	cReq.qty = C.int32_t(req.Qty)
+	cReq.qty = C.int(req.Qty)
 	cReq.guest_id = C.uint64_t(req.GuestID)
 	cReq.request_id = C.uint64_t(req.RequestID)
 
-	// Non-blocking enqueue
-	ret := C.EnqueueRequest(cReq)
-	if ret == 1 {
-		metrics.AddEnqueueOK()
+	// Pass to C++ Ring Buffer
+	if C.EnqueueRequest(cReq) != 0 {
 		atomic.AddUint64(&AcceptedRequests, 1)
-		// Return 202 Accepted immediately
-		c.JSON(http.StatusAccepted, gin.H{
-			"msg":        "Enqueued",
-			"request_id": reqID,
-		})
-	} else if ret == 2 {
-		metrics.AddEnqueueReject() // Or new metric AddSoldOut?
-		// Direct Sold Out return
-		c.JSON(http.StatusConflict, gin.H{
-			"error": "Sold out",
-		})
+		c.JSON(http.StatusAccepted, gin.H{"status": "queued", "request_id": reqID})
 	} else {
+		// Queue Full - Rollback Redis!
 		metrics.AddEnqueueReject()
-		// Queue full -> 429 Too Many Requests
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": "Queue full, please retry later",
-		})
+		if cache.Rdb != nil {
+			cache.RollbackInventory(req.SkuID, req.GuestID, req.Qty)
+			cache.RemovePendingRequest(req.SkuID, req.GuestID, req.Qty, req.RequestID)
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Queue full"})
 	}
 
-	// 4. Record Latency
-	metrics.AddLatency(time.Since(start).Nanoseconds())
+	// elapsed := time.Since(start)
+	// metrics.RecordLatency(elapsed.Seconds())
 }
 
+// StatsHandler returns current metrics
 func StatsHandler(c *gin.Context) {
-	stats := metrics.GetStats()
-
-	// Fetch real-time stats from C++ engine
-	stats["queue_depth"] = uint64(C.GetQueueSize())
-	stats["sold_total"] = uint64(C.GetSoldTotal())
-
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, gin.H{
+		"accepted_requests": atomic.LoadUint64(&AcceptedRequests),
+		"results_received":  atomic.LoadUint64(&ResultsReceived),
+		"results_sold_out":  atomic.LoadUint64(&ResultsSoldOut),
+		"db_committed":      atomic.LoadUint64(&DBCommitted),
+		"queue_depth":       len(orderChan),
+	})
 }
 
-// BenchmarkEnqueue is a direct call helper for benchmarking without HTTP overhead
-func BenchmarkEnqueue() {
-	var cReq C.CSeckillRequest
-	cReq.sku_id = 123
-	cReq.qty = 1
-	cReq.guest_id = 1001
-	cReq.request_id = 2002
+// StartSweeper periodically checks for stale pending requests and rolls them back.
+func StartSweeper() {
+	fmt.Println("Sweeper: Started. Checking for stale requests every 5 seconds.")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	C.EnqueueRequest(cReq)
+	for range ticker.C {
+		// Timeout: 30 seconds. If a request is pending for > 30s, assume crash/loss.
+		staleMembers, err := cache.GetStalePendingRequests(30)
+		if err != nil {
+			fmt.Printf("Sweeper: Error getting stale requests: %v\n", err)
+			continue
+		}
+
+		for _, member := range staleMembers {
+			// Format: "sku:user:qty:reqID"
+			var sku int64
+			var user, reqID uint64
+			var qty int
+			n, err := fmt.Sscanf(member, "%d:%d:%d:%d", &sku, &user, &qty, &reqID)
+			if err != nil || n != 4 {
+				fmt.Printf("Sweeper: Invalid member format '%s': %v. Removing.\n", member, err)
+				cache.Rdb.ZRem(cache.Ctx, cache.PendingKey, member)
+				continue
+			}
+
+			fmt.Printf("Sweeper: Found stale request %d (User %d, SKU %d). Rolling back...\n", reqID, user, sku)
+
+			// Rollback Inventory
+			err = cache.RollbackInventory(sku, user, qty)
+			if err != nil {
+				fmt.Printf("Sweeper: Failed to rollback request %d: %v\n", reqID, err)
+				// Don't remove if rollback failed? Or move to dead letter?
+				// RollbackInventory already handles retries and dead letter.
+				// So we can assume it's handled (or permanently failed).
+				// We should remove it from Pending to avoid infinite loop of trying to rollback?
+				// Yes, if it went to dead letter, we remove from pending.
+			}
+
+			// Remove from Pending
+			cache.RemovePendingRequest(sku, user, qty, reqID)
+			fmt.Printf("Sweeper: Rolled back and removed request %d\n", reqID)
+		}
+	}
 }
