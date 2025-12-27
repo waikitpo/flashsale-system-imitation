@@ -1,8 +1,9 @@
 package handler
 
 /*
-#cgo CXXFLAGS: -std=c++20 -I${SRCDIR}/../../engine/src
-#include "../../engine/src/bridge.h"
+#cgo CXXFLAGS: -std=c++20
+#cgo LDFLAGS: -static-libstdc++ -static-libgcc
+#include "bridge.h"
 */
 import "C"
 
@@ -21,6 +22,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm/clause"
+)
+
+var (
+	// Circuit Breaker for Redis
+	redisFailureCount atomic.Uint32
+	redisLastFailure  atomic.Int64
+)
+
+const (
+	RedisFailureThreshold = 5
+	RedisCircuitDuration  = 5 // seconds
 )
 
 type SeckillRequest struct {
@@ -305,12 +317,28 @@ func EnqueueHandler(c *gin.Context) {
 
 	// 2.5 Redis Pre-check (Distributed Gatekeeper)
 	if cache.Rdb != nil {
+		// Circuit Breaker Check
+		if redisFailureCount.Load() > RedisFailureThreshold {
+			if time.Now().Unix()-redisLastFailure.Load() < RedisCircuitDuration {
+				// Circuit Open: Fail Fast
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "System Busy (Storage Layer)"})
+				return
+			}
+			// Half-open: Allow one request through (or all, relying on atomic reset)
+		}
+
 		status, err := cache.DeductInventory(req.SkuID, req.GuestID, req.Qty, req.RequestID)
 		if err != nil {
+			// Record Failure
+			redisFailureCount.Add(1)
+			redisLastFailure.Store(time.Now().Unix())
+
 			fmt.Printf("Redis Error: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "System Error"})
 			return
 		}
+		// Success: Reset Failure Count
+		redisFailureCount.Store(0)
 
 		if status == 0 { // Sold Out
 			metrics.AddEnqueueReject()

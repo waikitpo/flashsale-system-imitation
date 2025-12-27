@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: seckill-backend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - REDIS_HOST=redis
+      - PG_DSN=host=postgres user=user password=password dbname=seckill port=5432 sslmode=disable TimeZone=Asia/Shanghai
+      - USE_PG=true
+    depends_on:
+      - postgres
+      - redis
+
   postgres:
     image: postgres:15-alpine
     container_name: seckill-postgres

@@ -1,5 +1,6 @@
 # Binaries
 backend_app
+backend/backend_server
 *.o
 *.so
 

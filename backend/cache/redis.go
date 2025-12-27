@@ -87,9 +87,13 @@ return 0 -- Nothing to rollback
 
 func InitRedis(addr string, password string, db int) {
 	Rdb = redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
+		Addr:         addr,
+		Password:     password,
+		DB:           db,
+		ReadTimeout:  200 * time.Millisecond,
+		WriteTimeout: 200 * time.Millisecond,
+		PoolSize:     100,
+		MinIdleConns: 10,
 	})
 
 	_, err := Rdb.Ping(Ctx).Result()
