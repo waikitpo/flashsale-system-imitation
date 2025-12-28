@@ -63,6 +63,7 @@ public:
         // Initialize mock inventory
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
+        inventory_[666] = 100; // Cluster Verification Test
         inventory_[999] = 100; // Overselling test: 100 items
         inventory_[888] = 5;   // Flag Logic Regression Test: 5 items
         
