@@ -52,7 +52,25 @@ var (
 	ResultsReceived  uint64
 	ResultsSoldOut   uint64
 	DBCommitted      uint64
+
+	// DB Metrics
+	DBBatchCount   uint64
+	DBTotalLatency uint64 // Microseconds
+
+	// Cleanup Worker Metrics
+	CleanupBatchCount uint64
+	CleanupTotalItems uint64
 )
+
+type CleanupTask struct {
+	SkuID     int64
+	GuestID   uint64
+	Qty       int
+	RequestID uint64
+	Status    int // 1=Success (RemovePending), 2=SoldOut (Rollback)
+}
+
+var cleanupChan chan CleanupTask
 
 // StartConsumer initializes the C++ engine.
 func StartConsumer() {
@@ -62,10 +80,16 @@ func StartConsumer() {
 	dbWorkerDone = make(chan struct{})
 	// Order Processing Channel
 	orderChan = make(chan model.Order, 10000)
+	cleanupChan = make(chan CleanupTask, 10000)
 
 	// Shutdown Signals
 	go dbWorker()
-	go processResults()
+	go cleanupWorker()
+
+	// Launch Parallel Result Processors
+	for i := 0; i < 8; i++ {
+		go processResultWorker(i)
+	}
 	go StartSweeper()
 }
 
@@ -100,15 +124,15 @@ func WarmUpSystem() {
 	fmt.Println("=== System WarmUp Completed ===")
 }
 
-func processResults() {
+func processResultWorker(id int) {
 	var res C.CSeckillResult
-	fmt.Println("Async Consumer: Polling Started")
+	fmt.Printf("Async Consumer %d: Polling Started\n", id)
 
 loop:
 	for {
 		select {
 		case <-shutdownChan:
-			fmt.Println("Async Consumer: Shutdown signal received")
+			fmt.Printf("Async Consumer %d: Shutdown signal received\n", id)
 			break loop
 		default:
 			if C.PollResult(&res) != 0 {
@@ -116,11 +140,16 @@ loop:
 				status := int(res.status)
 
 				// Always increment ResultsReceived for closed-loop shutdown
-				atomic.AddUint64(&ResultsReceived, 1)
+				val := atomic.AddUint64(&ResultsReceived, 1)
+
+				if val <= 100 {
+					fmt.Printf("DEBUG: Status=%d, MPMC=%d, SPSC=%d, Ingress=%d, PopMPMC=%d\n",
+						status, res.mpmc_latency_ns, res.spsc_latency_ns, res.ts_ingress, res.ts_pop_mpmc)
+				}
 
 				if status == 1 {
-					// Remove from Pending (In-Flight)
-					cache.RemovePendingRequest(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+					// Collect Queue Latency Metrics
+					metrics.AddQueueLatency(int64(res.mpmc_latency_ns), int64(res.spsc_latency_ns))
 
 					order := model.Order{
 						ID:      uint64(res.request_id),
@@ -131,36 +160,48 @@ loop:
 					}
 					// Push to Memory Buffer (Will block if full -> Backpressure)
 					metrics.SetResultQueueDepth(uint64(len(orderChan)))
+
+					// 1. Persist (OrderChan) - DB Worker handles idempotency
 					select {
 					case orderChan <- order:
 					case <-shutdownChan:
-						fmt.Println("Async Consumer: Shutdown signal received while pushing")
+						fmt.Printf("Async Consumer %d: Shutdown signal received while pushing\n", id)
 						orderChan <- order
 						break loop
 					}
+
+					// 2. Cleanup (Redis) - Async
+					cleanupChan <- CleanupTask{
+						SkuID:     int64(res.sku_id),
+						GuestID:   uint64(res.guest_id),
+						Qty:       int(res.qty),
+						RequestID: uint64(res.request_id),
+						Status:    1,
+					}
+
 				} else if status == 2 {
 					atomic.AddUint64(&ResultsSoldOut, 1)
 					// C++ Engine found it sold out (Double Check)
-					// We must rollback Redis because we already decremented it.
-					if cache.Rdb != nil {
-						go func(sku int64, guest uint64, q int, rID uint64) {
-							cache.RollbackInventory(sku, guest, q, rID)
-							// RemovePendingRequest is handled inside RollbackInventory
-							fmt.Printf("Rolled back Req %d (Status 2: SoldOut from Engine)\n", rID)
-						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+					// Push to Cleanup for Rollback
+					cleanupChan <- CleanupTask{
+						SkuID:     int64(res.sku_id),
+						GuestID:   uint64(res.guest_id),
+						Qty:       int(res.qty),
+						RequestID: uint64(res.request_id),
+						Status:    2,
 					}
 				} else {
 					// status == 0 or other errors
-					// Internal Engine Failure (e.g. WAL error)
-					if cache.Rdb != nil {
-						go func(sku int64, guest uint64, q int, rID uint64) {
-							// fmt.Printf("DEBUG: Simulating Crash... Sleeping 60s before rollback for Req %d\n", rID)
-							// time.Sleep(60 * time.Second)
-							cache.RollbackInventory(sku, guest, q, rID)
-							// RemovePendingRequest is handled inside RollbackInventory
-							fmt.Printf("Rolled back Req %d (Status %d: Internal Failure)\n", rID, status)
-						}(int64(res.sku_id), uint64(res.guest_id), int(res.qty), uint64(res.request_id))
+					// Internal Engine Failure
+					// Also Rollback
+					cleanupChan <- CleanupTask{
+						SkuID:     int64(res.sku_id),
+						GuestID:   uint64(res.guest_id),
+						Qty:       int(res.qty),
+						RequestID: uint64(res.request_id),
+						Status:    status,
 					}
+					fmt.Printf("Rolled back Req %d (Status %d: Internal Failure)\n", res.request_id, status)
 				}
 			} else {
 				// Sleep briefly to avoid busy loop if queue is empty
@@ -168,104 +209,121 @@ loop:
 			}
 		}
 	}
+	// Worker exits
+}
 
-	// Draining Phase
-	fmt.Println("Async Consumer: Draining queue...")
+// processResults removed (replaced by processResultWorker)
 
-	// 1. Wait for C++ Engine to process all pending requests
-	idleCounter := 0
+func cleanupWorker() {
+	const batchSize = 100 // Larger batch for Redis
+	const flushInterval = 5 * time.Millisecond
+	var batch []CleanupTask = make([]CleanupTask, 0, batchSize)
+
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	fmt.Println("Async Cleanup Worker Started")
+
+	flush := func() {
+		if len(batch) > 0 {
+			if cache.Rdb == nil {
+				fmt.Println("Error: Redis client is nil in Cleanup Worker")
+				batch = batch[:0]
+				return
+			}
+
+			pipe := cache.Rdb.Pipeline()
+
+			for _, task := range batch {
+				if task.Status == 1 {
+					// Success: Remove Pending + Mark Done
+					member := fmt.Sprintf("%d:%d:%d:%d", task.SkuID, task.GuestID, task.Qty, task.RequestID)
+					pendingKey := fmt.Sprintf("seckill:{%d}:pending", task.SkuID)
+					doneKey := fmt.Sprintf("done:{%d}", task.RequestID)
+
+					// 1. Mark Done (Idempotency Key for 60s)
+					pipe.SetNX(cache.Ctx, doneKey, 1, 60*time.Second)
+
+					// 2. Remove from Pending
+					pipe.ZRem(cache.Ctx, pendingKey, member)
+				} else {
+					// Rollback (Status 2 or others)
+					// For simplicity, we just trigger RollbackInventory goroutine or do it here?
+					// RollbackInventory involves Lua script. Can we pipeline Lua? Yes.
+					// But RollbackInventory function logic is complex (retries).
+					// For now, let's keep it simple: spawn goroutine for Rollback (since it's error path)
+					// Or call it directly if we want to block cleanup worker? No.
+					go func(t CleanupTask) {
+						cache.RollbackInventory(t.SkuID, t.GuestID, t.Qty, t.RequestID)
+					}(task)
+				}
+			}
+
+			_, err := pipe.Exec(cache.Ctx)
+			if err != nil {
+				fmt.Println("Redis Cleanup Pipeline Error:", err)
+			}
+
+			atomic.AddUint64(&CleanupBatchCount, 1)
+			atomic.AddUint64(&CleanupTotalItems, uint64(len(batch)))
+
+			batch = batch[:0]
+		}
+	}
+
 	for {
-		var pendingInput C.uint64_t
-		var activeWorkers C.uint64_t
-		var pendingOutput C.uint64_t
-
-		C.GetEngineStatus(&pendingInput, &activeWorkers, &pendingOutput)
-
-		fmt.Printf("Engine Status - Input: %d, Active: %d, Output: %d\n", pendingInput, activeWorkers, pendingOutput)
-		fmt.Printf("Metrics - Accepted: %d, Received: %d, SoldOut: %d, Committed: %d\n",
-			atomic.LoadUint64(&AcceptedRequests),
-			atomic.LoadUint64(&ResultsReceived),
-			atomic.LoadUint64(&ResultsSoldOut),
-			atomic.LoadUint64(&DBCommitted))
-
-		if pendingInput == 0 && activeWorkers == 0 && pendingOutput == 0 {
-			idleCounter++
-			if idleCounter >= 5 { // Require stable idle state
-				break
+		select {
+		case task := <-cleanupChan:
+			batch = append(batch, task)
+			if len(batch) >= batchSize {
+				flush()
 			}
-		} else {
-			idleCounter = 0
+		case <-ticker.C:
+			flush()
 		}
-
-		// While waiting, continue to consume results to prevent result queue from filling up
-		for C.PollResult(&res) != 0 {
-			order := model.Order{
-				ID:      uint64(res.request_id),
-				SkuID:   int64(res.sku_id),
-				GuestID: uint64(res.guest_id),
-				Qty:     int32(res.qty),
-				Status:  1, // Created
-			}
-			atomic.AddUint64(&ResultsReceived, 1)
-			orderChan <- order
-		}
-		time.Sleep(50 * time.Millisecond)
 	}
-
-	// 2. Wait a bit for in-flight requests (workers processing) to finish
-	// Not needed as much with IsEngineIdle logic, but good for safety
-	time.Sleep(100 * time.Millisecond)
-
-	// 3. Final Drain of Result Queue
-	for C.PollResult(&res) != 0 {
-		order := model.Order{
-			ID:      uint64(res.request_id),
-			SkuID:   int64(res.sku_id),
-			GuestID: uint64(res.guest_id),
-			Qty:     int32(res.qty),
-			Status:  1, // Created
-		}
-		atomic.AddUint64(&ResultsReceived, 1)
-		orderChan <- order
-	}
-	fmt.Println("Async Consumer: Queue drained. Closing channel.")
-	close(orderChan)
 }
 
 func dbWorker() {
 	const batchSize = 1000
+	const flushInterval = 10 * time.Millisecond // Reduced from 200ms for lower latency
 	var batch []model.Order = make([]model.Order, 0, batchSize)
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 	defer close(dbWorkerDone)
 
 	fmt.Println("Async DB Worker Started")
+
+	flush := func() {
+		if len(batch) > 0 {
+			start := time.Now()
+			db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
+			latency := time.Since(start).Microseconds()
+
+			atomic.AddUint64(&DBCommitted, uint64(len(batch)))
+			atomic.AddUint64(&DBBatchCount, 1)
+			atomic.AddUint64(&DBTotalLatency, uint64(latency))
+
+			batch = batch[:0]
+		}
+	}
 
 	for {
 		select {
 		case order, ok := <-orderChan:
 			if !ok {
 				// Channel closed, flush remaining
-				if len(batch) > 0 {
-					db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
-					atomic.AddUint64(&DBCommitted, uint64(len(batch)))
-				}
+				flush()
 				fmt.Println("Async DB Worker Stopped")
 				return
 			}
 			batch = append(batch, order)
 			if len(batch) >= batchSize {
-				db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
-				atomic.AddUint64(&DBCommitted, uint64(len(batch)))
-				batch = batch[:0]
+				flush()
 			}
 		case <-ticker.C:
-			if len(batch) > 0 {
-				db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
-				atomic.AddUint64(&DBCommitted, uint64(len(batch)))
-				batch = batch[:0]
-			}
+			flush()
 		}
 	}
 }
@@ -424,13 +482,50 @@ func EnqueueHandler(c *gin.Context) {
 
 // StatsHandler returns current metrics
 func StatsHandler(c *gin.Context) {
+	var enq, deq C.uint64_t
+	C.GetQueueCounters(&enq, &deq)
+
+	dbCount := atomic.LoadUint64(&DBBatchCount)
+	dbLat := atomic.LoadUint64(&DBTotalLatency)
+	var avgDBLat float64 = 0
+	if dbCount > 0 {
+		avgDBLat = float64(dbLat) / float64(dbCount)
+	}
+
+	cleanupCount := atomic.LoadUint64(&CleanupBatchCount)
+	cleanupItems := atomic.LoadUint64(&CleanupTotalItems)
+	var avgCleanupBatch float64 = 0
+	if cleanupCount > 0 {
+		avgCleanupBatch = float64(cleanupItems) / float64(cleanupCount)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"accepted_requests": atomic.LoadUint64(&AcceptedRequests),
-		"results_received":  atomic.LoadUint64(&ResultsReceived),
-		"results_sold_out":  atomic.LoadUint64(&ResultsSoldOut),
-		"db_committed":      atomic.LoadUint64(&DBCommitted),
-		"queue_depth":       len(orderChan),
+		"accepted_requests":   atomic.LoadUint64(&AcceptedRequests),
+		"results_received":    atomic.LoadUint64(&ResultsReceived),
+		"results_sold_out":    atomic.LoadUint64(&ResultsSoldOut),
+		"db_committed":        atomic.LoadUint64(&DBCommitted),
+		"queue_depth":         len(orderChan),
+		"cpp_enqueue":         uint64(enq),
+		"cpp_dequeue":         uint64(deq),
+		"db_batch_count":      dbCount,
+		"db_avg_latency_us":   avgDBLat,
+		"cleanup_batch_count": cleanupCount,
+		"cleanup_avg_size":    avgCleanupBatch,
+		"mpmc_count":          atomic.LoadUint64(&metrics.MpmcCount),
+		"mpmc_latency_total":  atomic.LoadUint64(&metrics.MpmcLatencyTotal),
+		"spsc_count":          atomic.LoadUint64(&metrics.SpscCount),
+		"spsc_latency_total":  atomic.LoadUint64(&metrics.SpscLatencyTotal),
 	})
+}
+
+// PrintQueueCounters fetches and prints internal C++ queue counters.
+func PrintQueueCounters() {
+	var enq, deq C.uint64_t
+	C.GetQueueCounters(&enq, &deq)
+	fmt.Printf("\n=== C++ Queue Counters ===\n")
+	fmt.Printf("Enqueue (Success): %d\n", uint64(enq))
+	fmt.Printf("Dequeue (Dispatcher): %d\n", uint64(deq))
+	fmt.Printf("==========================\n")
 }
 
 // StartSweeper periodically checks for stale pending requests and rolls them back.

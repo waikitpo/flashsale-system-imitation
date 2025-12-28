@@ -13,6 +13,11 @@ typedef struct {
     int32_t _pad1;
     uint64_t guest_id;
     uint64_t request_id;
+    // Latency Tracking
+    int64_t ts_ingress;   // Time when EnqueueRequest called
+    int64_t ts_pop_mpmc;  // Time when popped from MPMC (Dispatcher)
+    int64_t ts_push_spsc; // Time when pushed to SPSC (Dispatcher)
+    int64_t ts_pop_spsc;  // Time when popped from SPSC (Worker)
 } CSeckillRequest;
 
 typedef struct {
@@ -23,6 +28,11 @@ typedef struct {
     uint64_t request_id;
     int32_t status; // 1=Success, 0=Fail
     int32_t _pad2;
+    // Latency Reporting
+    int64_t mpmc_latency_ns; // ts_pop_mpmc - ts_ingress
+    int64_t spsc_latency_ns; // ts_pop_spsc - ts_push_spsc
+    int64_t ts_ingress;      // Time when EnqueueRequest called
+    int64_t ts_pop_mpmc;     // Time when popped from MPMC (Dispatcher)
 } CSeckillResult;
 
 // Initialize the engine (start consumer thread)
@@ -76,6 +86,9 @@ void EnableCorrectnessCheck(int enabled);
 
 // Get correctness stats
 void GetConsumerStats(uint64_t* last_seq, uint64_t* gap_count, uint64_t* dup_count);
+
+// Get internal queue counters (enqueue/dequeue attempts)
+void GetQueueCounters(uint64_t* enq, uint64_t* deq);
 
 // Poll for a result. Returns 1 if a result was retrieved, 0 if queue is empty.
 int PollResult(CSeckillResult* res);

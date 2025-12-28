@@ -131,7 +131,8 @@ func DeductInventory(skuID int64, userID uint64, qty int, reqID uint64) (int, er
 	pendingKey := fmt.Sprintf("seckill:{%d}:pending", skuID)
 
 	member := fmt.Sprintf("%d:%d:%d:%d", skuID, userID, qty, reqID)
-	timestamp := float64(time.Now().Unix())
+	// Use Microseconds for higher precision (compatible with float score)
+	timestamp := float64(time.Now().UnixMicro()) / 1e6
 
 	val, err := Rdb.Eval(Ctx, script, []string{stockKey, boughtKey, pendingKey}, userID, qty, timestamp, member).Result()
 	if err != nil {

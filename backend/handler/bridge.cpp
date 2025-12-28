@@ -15,6 +15,11 @@ struct Request {
     int32_t _pad1;
     uint64_t guest_id;
     uint64_t request_id;
+    // Latency Tracking
+    int64_t ts_ingress;   // Time when EnqueueRequest called
+    int64_t ts_pop_mpmc;  // Time when popped from MPMC (Dispatcher)
+    int64_t ts_push_spsc; // Time when pushed to SPSC (Dispatcher)
+    int64_t ts_pop_spsc;  // Time when popped from SPSC (Worker)
 };
 
 // Ensure layout compatibility
@@ -32,6 +37,8 @@ static const int kWorkerCount = 4; // Configurable
 
 // Global Stats
 static std::atomic<uint64_t> sold_total{0};
+static std::atomic<uint64_t> global_enqueue_count{0};
+static std::atomic<uint64_t> global_dequeue_count{0};
 // Sold Out Flags (Shared State)
 static std::unordered_map<int64_t, std::unique_ptr<std::atomic<bool>>> sold_out_store;
 
@@ -45,6 +52,12 @@ static uint64_t last_seq_seen = 0;
 std::atomic<uint64_t> barrier_reached_count{0};
 std::atomic<uint64_t> target_barrier_seq{0};
 
+// Helper for monotonic clock in nanoseconds
+inline int64_t now_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 void DispatcherLoop() {
     // Batch buffer
     const size_t kBatchSize = 128;
@@ -57,6 +70,9 @@ void DispatcherLoop() {
         size_t count = 0;
         for (size_t i = 0; i < kBatchSize; ++i) {
             if (queue->try_dequeue(batch[i])) {
+                // Record MPMC Pop Time
+                batch[i].ts_pop_mpmc = now_ns();
+                global_dequeue_count.fetch_add(1, std::memory_order_relaxed);
                 count++;
             } else {
                 break;
@@ -67,7 +83,7 @@ void DispatcherLoop() {
             backoff.reset();
             
             for (size_t i = 0; i < count; ++i) {
-                const auto& req = batch[i];
+                auto& req = batch[i];
 
                 // Check for Barrier
                 if (req.request_id == UINT64_MAX) {
@@ -107,7 +123,11 @@ void DispatcherLoop() {
                 
                 // Convert Request to WorkerRequest (memcpy safe due to layout check)
                 WorkerRequest wreq;
+                // Important: Copy timestamp fields
                 std::memcpy(&wreq, &req, sizeof(WorkerRequest));
+                
+                // Record SPSC Push Time
+                wreq.ts_push_spsc = now_ns();
 
                 // Try enqueue to worker's MPMC queue
                 // If full, we implement a simple backpressure (drop or spin)
@@ -207,9 +227,12 @@ int EnqueueRequest(CSeckillRequest creq) {
     req.qty = creq.qty;
     req.guest_id = creq.guest_id;
     req.request_id = creq.request_id;
+    req.ts_ingress = now_ns();
 
-    if (req.request_id > 100000) {
-        std::cout << "[Bridge Error] EnqueueRequest Suspicious ID: " << req.request_id << std::endl;
+    if (req.request_id > 1000000000000000000ULL) {
+        // Valid large ID
+    } else if (req.request_id > 100000) {
+       // std::cout << "[Bridge Error] EnqueueRequest Suspicious ID: " << req.request_id << std::endl;
     }
 
     // Fast-Path: Check Sold Out Flag
@@ -221,6 +244,7 @@ int EnqueueRequest(CSeckillRequest creq) {
     }
 
     if (queue->try_enqueue(req)) {
+        global_enqueue_count.fetch_add(1, std::memory_order_relaxed);
         return 1;
     }
     return 0; // Queue Full
@@ -235,6 +259,7 @@ int EnqueueBatch(CSeckillRequest* reqs, int count) {
     int enqueued = 0;
     for (int i = 0; i < count; ++i) {
         if (queue->try_enqueue(first[i])) {
+            global_enqueue_count.fetch_add(1, std::memory_order_relaxed);
             enqueued++;
         } else {
             break; // Stop if full
@@ -404,6 +429,11 @@ void GetConsumerStats(uint64_t* last_seq, uint64_t* gap, uint64_t* dup) {
     if (last_seq) *last_seq = last_seq_seen;
     if (gap) *gap = gap_count;
     if (dup) *dup = dup_count;
+}
+
+void GetQueueCounters(uint64_t* enq, uint64_t* deq) {
+    if (enq) *enq = global_enqueue_count.load(std::memory_order_relaxed);
+    if (deq) *deq = global_dequeue_count.load(std::memory_order_relaxed);
 }
 
 int PollResult(CSeckillResult* res) {

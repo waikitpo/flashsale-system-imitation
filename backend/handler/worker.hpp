@@ -53,6 +53,11 @@ struct WorkerRequest {
     int32_t _pad1;
     uint64_t guest_id;
     uint64_t request_id;
+    // Latency Tracking
+    int64_t ts_ingress;
+    int64_t ts_pop_mpmc;
+    int64_t ts_push_spsc;
+    int64_t ts_pop_spsc;
 };
 
 class Worker {
@@ -66,6 +71,8 @@ public:
         inventory_[666] = 100; // Cluster Verification Test
         inventory_[999] = 100; // Overselling test: 100 items
         inventory_[888] = 5;   // Flag Logic Regression Test: 5 items
+        inventory_[777] = 50000; // Benchmark Latency Test
+
         
         // SPSC queue for this worker (Dispatcher -> Worker is 1:1)
         // Capacity 16K
@@ -125,6 +132,10 @@ private:
         for (;;) {
             WorkerRequest req;
             if (queue_->try_dequeue(req)) {
+                // Record SPSC Pop Time
+                req.ts_pop_spsc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+
                 is_processing_.store(true, std::memory_order_release);
                 Process(req);
                 is_processing_.store(false, std::memory_order_release);
@@ -136,6 +147,10 @@ private:
                         break;
                     }
                     // If we dequeued successfully, process it
+                    // Record SPSC Pop Time
+                    req.ts_pop_spsc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+
                     is_processing_.store(true, std::memory_order_release);
                     Process(req);
                     is_processing_.store(false, std::memory_order_release);
@@ -177,6 +192,20 @@ private:
         res.qty = req.qty;
         res.guest_id = req.guest_id;
         res.status = 0; // Default: Failed
+        
+        // Calculate Latencies (in nanoseconds)
+        if (req.ts_ingress > 0) {
+            res.mpmc_latency_ns = req.ts_pop_mpmc - req.ts_ingress;
+            res.spsc_latency_ns = req.ts_pop_spsc - req.ts_push_spsc;
+            // Debug fields
+            res.ts_ingress = req.ts_ingress;
+            res.ts_pop_mpmc = req.ts_pop_mpmc;
+        } else {
+            res.mpmc_latency_ns = 0;
+            res.spsc_latency_ns = 0;
+            res.ts_ingress = 0;
+            res.ts_pop_mpmc = 0;
+        }
 
         // 2. Inventory Check & Deduct
         auto it = inventory_.find(req.sku_id);
