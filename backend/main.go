@@ -45,6 +45,9 @@ func main() {
 	// Initialize C++ Engine
 	handler.StartConsumer()
 
+	// Perform System WarmUp
+	handler.WarmUpSystem()
+
 	// Setup graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

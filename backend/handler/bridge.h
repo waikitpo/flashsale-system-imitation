@@ -28,6 +28,9 @@ typedef struct {
 // Initialize the engine (start consumer thread)
 void InitEngine();
 
+// Warm up the engine by sending dummy requests
+void WarmUpEngine();
+
 // Enqueue a request. Returns 1 if successful, 0 if queue is full.
 int EnqueueRequest(CSeckillRequest req);
 

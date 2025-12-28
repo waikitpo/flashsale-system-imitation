@@ -175,6 +175,30 @@ void InitEngine() {
               << ", Workers: " << kWorkerCount << std::endl;
 }
 
+void WarmUpEngine() {
+    if (!running.load()) return;
+    
+    std::cout << "[C++ Engine] Starting WarmUp Phase..." << std::endl;
+    
+    const int kWarmUpCount = 20000;
+    for (int i = 0; i < kWarmUpCount; ++i) {
+        Request req;
+        std::memset(&req, 0, sizeof(req));
+        req.request_id = 0; // WarmUp Signal
+        req.sku_id = i % kWorkerCount; // Round-robin to hit all workers
+        req.qty = 1;
+        req.guest_id = i;
+        
+        while (!queue->try_enqueue(req)) {
+             std::this_thread::yield();
+        }
+    }
+    
+    // Wait for all dummy requests to flow through
+    WaitEngineDrained();
+    std::cout << "[C++ Engine] WarmUp Completed. Memory Pages Touched." << std::endl;
+}
+
 int EnqueueRequest(CSeckillRequest creq) {
     if (!running.load(std::memory_order_relaxed)) return 0;
 

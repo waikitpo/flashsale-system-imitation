@@ -150,6 +150,11 @@ private:
     }
 
     void Process(const WorkerRequest& req) {
+        // 0. WarmUp No-Op
+        if (req.request_id == 0) {
+            return;
+        }
+
         // 0. Barrier Check
         if (req.request_id == UINT64_MAX) {
             if (barrier_count_) {

@@ -69,6 +69,37 @@ func StartConsumer() {
 	go StartSweeper()
 }
 
+// WarmUpSystem performs full system pre-heating
+func WarmUpSystem() {
+	fmt.Println("=== System WarmUp Started ===")
+
+	// 1. Redis Warmup
+	if cache.Rdb != nil {
+		fmt.Print("Redis: Pinging... ")
+		for i := 0; i < 10; i++ {
+			cache.Rdb.Ping(cache.Ctx)
+		}
+		fmt.Println("Done.")
+	}
+
+	// 2. DB Warmup
+	if db.DB != nil {
+		fmt.Print("DB: Pinging... ")
+		sqlDB, _ := db.DB.DB()
+		if sqlDB != nil {
+			for i := 0; i < 10; i++ {
+				sqlDB.Ping()
+			}
+		}
+		fmt.Println("Done.")
+	}
+
+	// 3. C++ Engine Warmup
+	fmt.Println("C++ Engine: Injecting WarmUp Traffic...")
+	C.WarmUpEngine()
+	fmt.Println("=== System WarmUp Completed ===")
+}
+
 func processResults() {
 	var res C.CSeckillResult
 	fmt.Println("Async Consumer: Polling Started")
