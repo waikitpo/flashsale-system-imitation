@@ -15,7 +15,9 @@ import (
 	"seckillapp/db"
 	"seckillapp/metrics"
 	"seckillapp/model"
+	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -56,6 +58,11 @@ var (
 	// DB Metrics
 	DBBatchCount   uint64
 	DBTotalLatency uint64 // Microseconds
+
+	// DB Latency Distribution (Protected by Mutex)
+	dbMetricsMu  sync.Mutex
+	dbLatencies  []int64 // Microseconds
+	dbBatchSizes []int
 
 	// Cleanup Worker Metrics
 	CleanupBatchCount uint64
@@ -305,6 +312,17 @@ func dbWorker() {
 			atomic.AddUint64(&DBBatchCount, 1)
 			atomic.AddUint64(&DBTotalLatency, uint64(latency))
 
+			// Collect Distribution Metrics
+			dbMetricsMu.Lock()
+			dbLatencies = append(dbLatencies, latency)
+			dbBatchSizes = append(dbBatchSizes, len(batch))
+			// Cap size to avoid infinite growth in long runs (optional but safe)
+			if len(dbLatencies) > 20000 {
+				dbLatencies = dbLatencies[1:]
+				dbBatchSizes = dbBatchSizes[1:]
+			}
+			dbMetricsMu.Unlock()
+
 			batch = batch[:0]
 		}
 	}
@@ -499,6 +517,33 @@ func StatsHandler(c *gin.Context) {
 		avgCleanupBatch = float64(cleanupItems) / float64(cleanupCount)
 	}
 
+	// Calculate Percentiles
+	dbMetricsMu.Lock()
+	latencies := make([]int64, len(dbLatencies))
+	copy(latencies, dbLatencies)
+	sizes := make([]int, len(dbBatchSizes))
+	copy(sizes, dbBatchSizes)
+	dbMetricsMu.Unlock()
+
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	sort.Ints(sizes)
+
+	getPercentile := func(data []int64, p float64) int64 {
+		if len(data) == 0 {
+			return 0
+		}
+		idx := int(float64(len(data)-1) * p)
+		return data[idx]
+	}
+
+	getPercentileInt := func(data []int, p float64) int {
+		if len(data) == 0 {
+			return 0
+		}
+		idx := int(float64(len(data)-1) * p)
+		return data[idx]
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"accepted_requests":   atomic.LoadUint64(&AcceptedRequests),
 		"results_received":    atomic.LoadUint64(&ResultsReceived),
@@ -509,6 +554,14 @@ func StatsHandler(c *gin.Context) {
 		"cpp_dequeue":         uint64(deq),
 		"db_batch_count":      dbCount,
 		"db_avg_latency_us":   avgDBLat,
+		"db_latency_p50":      getPercentile(latencies, 0.50),
+		"db_latency_p90":      getPercentile(latencies, 0.90),
+		"db_latency_p99":      getPercentile(latencies, 0.99),
+		"db_latency_max":      getPercentile(latencies, 1.00),
+		"db_batch_size_p50":   getPercentileInt(sizes, 0.50),
+		"db_batch_size_p90":   getPercentileInt(sizes, 0.90),
+		"db_batch_size_p99":   getPercentileInt(sizes, 0.99),
+		"db_batch_size_max":   getPercentileInt(sizes, 1.00),
 		"cleanup_batch_count": cleanupCount,
 		"cleanup_avg_size":    avgCleanupBatch,
 		"mpmc_count":          atomic.LoadUint64(&metrics.MpmcCount),

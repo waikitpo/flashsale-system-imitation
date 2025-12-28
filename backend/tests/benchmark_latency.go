@@ -173,11 +173,20 @@ func printInternalLatency(start, end map[string]float64) {
 	fmt.Printf("\n=== DB Worker Metrics ===\n")
 	fmt.Printf("Batch Count: %.0f\n", dbBatchCount)
 	fmt.Printf("Avg Batch Latency: %.2f us\n", dbAvgLat)
+	fmt.Printf("DB Batch Latency P50: %.2f us\n", end["db_latency_p50"])
+	fmt.Printf("DB Batch Latency P90: %.2f us\n", end["db_latency_p90"])
+	fmt.Printf("DB Batch Latency P99: %.2f us\n", end["db_latency_p99"])
+	fmt.Printf("DB Batch Latency Max: %.2f us\n", end["db_latency_max"])
+
 	if dbBatchCount > 0 {
 		// Estimated Total Items = DBCommitted Diff
 		dbCommitted := end["db_committed"] - start["db_committed"]
 		avgBatchSize := dbCommitted / dbBatchCount
 		fmt.Printf("Avg Batch Size: %.2f items\n", avgBatchSize)
+		fmt.Printf("Batch Size P50: %.0f items\n", end["db_batch_size_p50"])
+		fmt.Printf("Batch Size P90: %.0f items\n", end["db_batch_size_p90"])
+		fmt.Printf("Batch Size P99: %.0f items\n", end["db_batch_size_p99"])
+		fmt.Printf("Batch Size Max: %.0f items\n", end["db_batch_size_max"])
 	}
 
 	// Print Cleanup Metrics
