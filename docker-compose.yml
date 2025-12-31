@@ -26,6 +26,8 @@ services:
       - REDIS_HOST=redis
       - PG_DSN=host=postgres user=user password=password dbname=seckill port=5432 sslmode=disable TimeZone=Asia/Shanghai
       - USE_PG=true
+    ports:
+      - "3001:3000"
     depends_on:
       - postgres
       - redis
@@ -42,6 +44,8 @@ services:
       - REDIS_HOST=redis
       - PG_DSN=host=postgres user=user password=password dbname=seckill port=5432 sslmode=disable TimeZone=Asia/Shanghai
       - USE_PG=true
+    ports:
+      - "3002:3000"
     depends_on:
       - postgres
       - redis
@@ -58,6 +62,8 @@ services:
       - REDIS_HOST=redis
       - PG_DSN=host=postgres user=user password=password dbname=seckill port=5432 sslmode=disable TimeZone=Asia/Shanghai
       - USE_PG=true
+    ports:
+      - "3003:3000"
     depends_on:
       - postgres
       - redis
@@ -81,7 +87,7 @@ services:
     container_name: seckill-redis
     restart: always
     ports:
-      - "6379:6379"
+      - "6380:6379"
 
 volumes:
   postgres_data:

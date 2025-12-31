@@ -30,7 +30,9 @@ func main() {
 	// Initialize Redis
 	// Default to localhost:6379, no password, DB 0
 	redisAddr := "localhost:6379"
-	if host := os.Getenv("REDIS_HOST"); host != "" {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		redisAddr = addr
+	} else if host := os.Getenv("REDIS_HOST"); host != "" {
 		redisAddr = host + ":6379"
 	}
 	cache.InitRedis(redisAddr, "", 0)

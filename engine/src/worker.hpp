@@ -121,24 +121,33 @@ private:
         // Pin to core?
         // SetThreadAffinity(id_);
         
+        const size_t kBatchSize = 64;
+        WorkerRequest batch_buffer[kBatchSize];
+
         for (;;) {
-            WorkerRequest req;
-            if (queue_->try_dequeue(req)) {
+            size_t count = queue_->try_dequeue_batch(batch_buffer, kBatchSize);
+            
+            if (count > 0) {
                 is_processing_.store(true, std::memory_order_release);
-                Process(req);
+                for (size_t i = 0; i < count; ++i) {
+                    Process(batch_buffer[i]);
+                }
                 is_processing_.store(false, std::memory_order_release);
-                processed_count_.fetch_add(1, std::memory_order_release);
+                processed_count_.fetch_add(count, std::memory_order_release);
             } else {
                 if (!running_.load(std::memory_order_acquire)) {
                     // Double check queue is empty
-                    if (!queue_->try_dequeue(req)) {
+                    count = queue_->try_dequeue_batch(batch_buffer, kBatchSize);
+                    if (count == 0) {
                         break;
                     }
                     // If we dequeued successfully, process it
                     is_processing_.store(true, std::memory_order_release);
-                    Process(req);
+                    for (size_t i = 0; i < count; ++i) {
+                        Process(batch_buffer[i]);
+                    }
                     is_processing_.store(false, std::memory_order_release);
-                    processed_count_.fetch_add(1, std::memory_order_release);
+                    processed_count_.fetch_add(count, std::memory_order_release);
                     continue;
                 }
 

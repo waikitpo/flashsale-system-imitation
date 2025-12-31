@@ -129,32 +129,42 @@ private:
         // Pin to core?
         // SetThreadAffinity(id_);
         
+        const size_t kBatchSize = 64;
+        WorkerRequest batch_buffer[kBatchSize];
+
         for (;;) {
-            WorkerRequest req;
-            if (queue_->try_dequeue(req)) {
-                // Record SPSC Pop Time
-                req.ts_pop_spsc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            size_t count = queue_->try_dequeue_batch(batch_buffer, kBatchSize);
+            
+            if (count > 0) {
+                // Record SPSC Pop Time for the batch
+                int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
 
                 is_processing_.store(true, std::memory_order_release);
-                Process(req);
+                for (size_t i = 0; i < count; ++i) {
+                    batch_buffer[i].ts_pop_spsc = now;
+                    Process(batch_buffer[i]);
+                }
                 is_processing_.store(false, std::memory_order_release);
-                processed_count_.fetch_add(1, std::memory_order_release);
+                processed_count_.fetch_add(count, std::memory_order_release);
             } else {
                 if (!running_.load(std::memory_order_acquire)) {
                     // Double check queue is empty
-                    if (!queue_->try_dequeue(req)) {
+                    count = queue_->try_dequeue_batch(batch_buffer, kBatchSize);
+                    if (count == 0) {
                         break;
                     }
-                    // If we dequeued successfully, process it
-                    // Record SPSC Pop Time
-                    req.ts_pop_spsc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    // Record SPSC Pop Time for the batch
+                    int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
 
                     is_processing_.store(true, std::memory_order_release);
-                    Process(req);
+                    for (size_t i = 0; i < count; ++i) {
+                        batch_buffer[i].ts_pop_spsc = now;
+                        Process(batch_buffer[i]);
+                    }
                     is_processing_.store(false, std::memory_order_release);
-                    processed_count_.fetch_add(1, std::memory_order_release);
+                    processed_count_.fetch_add(count, std::memory_order_release);
                     continue;
                 }
 
