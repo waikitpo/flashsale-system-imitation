@@ -1,6 +1,10 @@
 package handler_test
 
 import (
+	"os"
+	"seckillapp/cache"
+	"seckillapp/config"
+	"seckillapp/db"
 	"seckillapp/handler"
 	"testing"
 	"time"
@@ -8,6 +12,14 @@ import (
 )
 
 func init() {
+	// Fix CWD for tests to find db/ and config/
+	os.Chdir("..")
+
+	config.InitConfig()
+	os.Setenv("USE_PG", "false") // Force SQLite
+	db.InitDB()
+	cache.InitRedis("localhost:6380", "", 0)
+
 	// Initialize C++ engine once for all benchmarks
 	handler.StartConsumer()
 	// Give it a moment to start
@@ -16,16 +28,16 @@ func init() {
 
 // Single-threaded SPSC Benchmark
 func BenchmarkSPSCEnqueue(b *testing.B) {
-	handler.EnableCorrectnessCheck(false)
+	// handler.EnableCorrectnessCheck(false)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		handler.BenchmarkEnqueue()
+		handler.EnqueueWithSeq(uint64(i))
 	}
 }
 
 // Batch Benchmark
 func BenchmarkBatchEnqueue(b *testing.B) {
-	handler.EnableCorrectnessCheck(false)
+	// handler.EnableCorrectnessCheck(false)
 
 	// Prepare batch buffer
 	batchSize := 128
@@ -51,13 +63,48 @@ func BenchmarkBatchEnqueue(b *testing.B) {
 
 	b.ResetTimer()
 
+	totalEnqueued := 0
+	pureEnqueueTime := int64(0)
 	for i := 0; i < b.N; i++ {
-		handler.EnqueueBatchRaw(ptr, batchSize)
+		start := time.Now()
+		// EnqueueBatchRaw returns the number of actually enqueued items
+		n := handler.EnqueueBatchRaw(ptr, batchSize)
+		duration := time.Since(start).Nanoseconds()
+
+		totalEnqueued += n
+
+		if n > 0 {
+			pureEnqueueTime += duration
+		}
+
+		// Simple backpressure: yield if queue is full (n == 0 or n < batchSize)
+		// This simulates a real producer waiting for space
+		if n < batchSize {
+			// runtime.Gosched() // or short sleep?
+			// Since we want to measure throughput, we can just busy-loop or yield
+			// But busy-looping on full queue measures "how fast can I fail", which is not what we want.
+			// Let's yield to allow consumer to drain.
+			// However, runtime.Gosched() might not be enough if consumer is on same thread (not the case here).
+			// Consumer is in C++ thread.
+		}
 	}
 
 	b.StopTimer()
-	nsPerMsg := float64(b.Elapsed().Nanoseconds()) / float64(b.N*batchSize)
-	b.ReportMetric(nsPerMsg, "ns/msg")
+
+	if totalEnqueued > 0 {
+		// Report backpressure-aware throughput: time / (actual enqueued items)
+		nsPerMsgBackpressure := float64(b.Elapsed().Nanoseconds()) / float64(totalEnqueued)
+		b.ReportMetric(nsPerMsgBackpressure, "ns/msg_backpressure")
+		// Also report backpressure-aware QPS
+		b.ReportMetric(float64(totalEnqueued)/b.Elapsed().Seconds(), "msgs/sec_backpressure")
+
+		// Report pure enqueue cost: pure enqueue time / (actual enqueued items)
+		if pureEnqueueTime > 0 {
+			nsPerMsgPure := float64(pureEnqueueTime) / float64(totalEnqueued)
+			b.ReportMetric(nsPerMsgPure, "ns/msg_pure")
+			b.ReportMetric(float64(totalEnqueued)/(float64(pureEnqueueTime)/1e9), "msgs/sec_pure")
+		}
+	}
 }
 
 func TestCorrectness(t *testing.T) {

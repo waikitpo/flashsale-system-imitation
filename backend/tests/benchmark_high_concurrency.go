@@ -19,10 +19,10 @@ const (
 	TargetURL   = "http://localhost:3000/api/seckill/enqueue"
 	StatsURL    = "http://localhost:3000/api/admin/stats"
 	RedisAddr   = "localhost:6380"
-	SkuID       = 777  // Special SKU for latency test
-	Stock       = 500  // Requested stock
-	TotalReq    = 5000 // Enough to oversell
-	Concurrency = 100 // Requested concurrency
+	SkuID       = 777    // Special SKU for latency test
+	Stock       = 5000    // Enough stock to avoid early sold out
+	TotalReq    = 200000 // Total requests
+	Concurrency = 1000   // High concurrency (reduced from 1000)
 )
 
 func main() {
@@ -192,6 +192,16 @@ func runBatch(rdb *redis.Client, totalReq, concurrency int, skuID int64, record 
 		failCount     int32
 	)
 
+	// Create a single HTTP Client with connection pooling
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 2000
+	t.MaxConnsPerHost = 2000
+	t.MaxIdleConnsPerHost = 2000
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: t,
+	}
+
 	start := time.Now()
 
 	for i := 0; i < totalReq; i++ {
@@ -210,17 +220,6 @@ func runBatch(rdb *redis.Client, totalReq, concurrency int, skuID int64, record 
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-Guest-Id", fmt.Sprintf("%d", guestID))
 			req.Header.Set("X-Request-Id", fmt.Sprintf("%d", reqID))
-
-			// Reuse client to simulate connection pooling or high concurrency
-			t := http.DefaultTransport.(*http.Transport).Clone()
-			t.MaxIdleConns = 1000
-			t.MaxConnsPerHost = 1000
-			t.MaxIdleConnsPerHost = 1000
-
-			client := &http.Client{
-				Timeout:   5 * time.Second,
-				Transport: t,
-			}
 
 			reqStart := time.Now()
 			resp, err := client.Do(req)

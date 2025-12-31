@@ -15,10 +15,10 @@ import (
 
 // Config
 const (
-	TotalRequests = 20000
-	Concurrency   = 100
+	TotalRequests = 100000
+	Concurrency   = 1000
 	TargetURL     = "http://localhost:3000/api/seckill/enqueue"
-	WarmupCount   = 100 // 预热请求数
+	WarmupCount   = 1000 // 预热请求数
 )
 
 // Stats
@@ -45,9 +45,9 @@ func getPercentile(lats []int64, p int) int64 {
 func main() {
 	// 1. Setup global HTTP Client with Keep-Alive
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConns = 100
-	t.MaxConnsPerHost = 100
-	t.MaxIdleConnsPerHost = 100
+	t.MaxIdleConns = 2000
+	t.MaxConnsPerHost = 2000
+	t.MaxIdleConnsPerHost = 2000
 	t.IdleConnTimeout = 90 * time.Second
 
 	client := &http.Client{
