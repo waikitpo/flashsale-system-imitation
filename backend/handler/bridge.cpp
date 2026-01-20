@@ -90,16 +90,22 @@ void MonitorThreadFunc() {
 static std::thread monitor_thread;
 // --------------------------------
 
+#include <immintrin.h> // For _mm_pause
+
 void Dispatcher(int shard_idx) {
     Request req;
     // Worker is statically mapped: shard_idx -> worker[shard_idx]
     Worker* target_worker = workers[shard_idx].get();
     
+    int backoff = 0;
+
     while (running.load(std::memory_order_relaxed)) {
         // Measure loop start
         auto start_loop = std::chrono::steady_clock::now();
 
         if (queues[shard_idx]->try_dequeue(req)) {
+            backoff = 0; // Reset backoff on success
+
             global_dequeue_count.fetch_add(1, std::memory_order_relaxed);
             
             req.ts_pop_mpmc = now_ns();
@@ -121,11 +127,18 @@ void Dispatcher(int shard_idx) {
             
             while (!target_worker->Enqueue(wreq)) {
                 // If worker queue is full, we spin/yield.
-                std::this_thread::yield();
+                _mm_pause(); 
             }
         } else {
-            // Empty queue, sleep briefly
-            std::this_thread::sleep_for(std::chrono::nanoseconds(100)); // 100ns
+            // Queue is empty: Hybrid Spin-Lock with Exponential Backoff
+            if (backoff < 10) {
+                _mm_pause(); // Low-latency spin (approx 40-60 cycles)
+            } else if (backoff < 20) {
+                std::this_thread::yield(); // Yield time slice
+            } else {
+                std::this_thread::sleep_for(std::chrono::nanoseconds(1)); // Sleep briefly (min OS scheduler resolution)
+            }
+            backoff++;
         }
     }
 }
