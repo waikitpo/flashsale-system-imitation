@@ -304,6 +304,11 @@ func dbWorker() {
 
 	flush := func() {
 		if len(batch) > 0 {
+			if db.DB == nil {
+				// DB disabled (e.g. benchmark)
+				batch = batch[:0]
+				return
+			}
 			start := time.Now()
 			db.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&batch)
 			latency := time.Since(start).Microseconds()
