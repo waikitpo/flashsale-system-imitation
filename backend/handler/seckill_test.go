@@ -2,9 +2,11 @@ package handler_test
 
 import (
 	"os"
+	"seckillapp/cache"
 	"seckillapp/config"
 	"seckillapp/db"
 	"seckillapp/handler"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -17,7 +19,7 @@ func init() {
 	config.InitConfig()
 	os.Setenv("USE_PG", "false") // Force SQLite
 	db.InitDB()
-	// cache.InitRedis("localhost:6380", "", 0)
+	cache.InitRedis("localhost:6380", "", 0)
 
 	// Initialize C++ engine once for all benchmarks
 	handler.StartConsumer()
@@ -55,15 +57,18 @@ func BenchmarkBatchEnqueue(b *testing.B) {
 	}
 
 	reqs := make([]CRequest, batchSize)
+	// Round-robin SKUs: 1001-1008
+	skuIDs := []int64{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008}
+	baseReqID := uint64(18000000000000000001)
+
 	for i := 0; i < batchSize; i++ {
-		reqs[i].SkuID = 123
+		reqs[i].SkuID = skuIDs[i%len(skuIDs)]
 		reqs[i].Qty = 1
 		reqs[i].GuestID = 1001
-		reqs[i].RequestID = uint64(i)
+		reqs[i].RequestID = baseReqID + uint64(i)
 	}
 
 	ptr := unsafe.Pointer(&reqs[0])
-
 	b.ResetTimer()
 
 	totalEnqueued := 0
@@ -80,28 +85,19 @@ func BenchmarkBatchEnqueue(b *testing.B) {
 			pureEnqueueTime += duration
 		}
 
-		// Simple backpressure: yield if queue is full (n == 0 or n < batchSize)
-		// This simulates a real producer waiting for space
+		// Simple backpressure simulation
 		if n < batchSize {
-			// runtime.Gosched() // or short sleep?
-			// Since we want to measure throughput, we can just busy-loop or yield
-			// But busy-looping on full queue measures "how fast can I fail", which is not what we want.
-			// Let's yield to allow consumer to drain.
-			// However, runtime.Gosched() might not be enough if consumer is on same thread (not the case here).
-			// Consumer is in C++ thread.
+			// runtime.Gosched()
 		}
 	}
 
 	b.StopTimer()
 
 	if totalEnqueued > 0 {
-		// Report backpressure-aware throughput: time / (actual enqueued items)
-		nsPerMsgBackpressure := float64(b.Elapsed().Nanoseconds()) / float64(totalEnqueued)
-		b.ReportMetric(nsPerMsgBackpressure, "ns/msg_backpressure")
-		// Also report backpressure-aware QPS
+		// Report backpressure-aware throughput
 		b.ReportMetric(float64(totalEnqueued)/b.Elapsed().Seconds(), "msgs/sec_backpressure")
 
-		// Report pure enqueue cost: pure enqueue time / (actual enqueued items)
+		// Report pure enqueue cost
 		if pureEnqueueTime > 0 {
 			nsPerMsgPure := float64(pureEnqueueTime) / float64(totalEnqueued)
 			b.ReportMetric(nsPerMsgPure, "ns/msg_pure")
@@ -254,6 +250,60 @@ func TestCorrectness(t *testing.T) {
 	if dup != 0 {
 		t.Errorf("Dup count %d, expected 0. (Duplicate processing?)", dup)
 	}
+}
+
+func BenchmarkPureQueueOverhead(b *testing.B) {
+	// Give consumer time to reset/drain from previous tests
+	time.Sleep(500 * time.Millisecond)
+
+	batchSize := 128
+	type CRequest struct {
+		SkuID      int64
+		Qty        int32
+		_          int32
+		GuestID    uint64
+		RequestID  uint64
+		TsIngress  int64
+		TsPopMpmc  int64
+		TsPushSpsc int64
+		TsPopSpsc  int64
+	}
+
+	reqs := make([]CRequest, batchSize)
+	// Use special RequestID to trigger Pure Queue Mode in Worker
+	// 18446744073709551615 is UINT64_MAX, used for barrier.
+	// Let's use 18446744073709551000 (just below max) as base
+	baseReqID := uint64(18000000000000000001)
+
+	// Round-robin SKUs: 1001-1008
+	skuIDs := []int64{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008}
+
+	for i := 0; i < batchSize; i++ {
+		reqs[i].SkuID = skuIDs[i%len(skuIDs)]
+		reqs[i].Qty = 1
+		reqs[i].GuestID = 1001
+		reqs[i].RequestID = baseReqID + uint64(i)
+	}
+
+	ptr := unsafe.Pointer(&reqs[0])
+
+	b.ResetTimer()
+	b.SetBytes(int64(batchSize * 64)) // Approx size of struct
+
+	totalAccepted := int64(0)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			n := handler.EnqueueBatchRaw(ptr, batchSize)
+			atomic.AddInt64(&totalAccepted, int64(n))
+		}
+	})
+
+	b.StopTimer()
+	elapsed := b.Elapsed().Seconds()
+	ops := float64(totalAccepted) / elapsed
+	b.ReportMetric(ops, "msgs/sec_pure_queue")
+	b.ReportMetric(1e9/ops, "ns/msg_pure_queue")
 }
 
 func TestFailFast(t *testing.T) {

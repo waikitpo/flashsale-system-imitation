@@ -38,7 +38,7 @@ func TestEndToEndPersistence(t *testing.T) {
 		GuestID:   8888,
 		RequestID: reqID,
 	}
-	
+
 	// 3. Enqueue
 	ptr := unsafe.Pointer(&req)
 	n := handler.EnqueueBatchRaw(ptr, 1)
@@ -74,7 +74,7 @@ func TestEndToEndPersistence(t *testing.T) {
 	// 5. Verify Content
 	var order model.Order
 	db.DB.First(&order, reqID)
-	
+
 	if order.SkuID != 123 {
 		t.Errorf("Expected SkuID 123, got %d", order.SkuID)
 	}

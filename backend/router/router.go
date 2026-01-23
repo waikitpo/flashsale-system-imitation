@@ -37,6 +37,7 @@ func SetupRouter() *gin.Engine {
 	admin := r.Group("api/admin")
 	{
 		admin.GET("/stats", handler.StatsHandler)
+		admin.GET("/count", handler.CountHandler)
 	}
 
 	return r

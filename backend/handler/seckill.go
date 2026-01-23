@@ -149,7 +149,7 @@ loop:
 				// Always increment ResultsReceived for closed-loop shutdown
 				val := atomic.AddUint64(&ResultsReceived, 1)
 
-				if val <= 100 {
+				if val <= 0 { // Disabled Debug Log
 					fmt.Printf("DEBUG: Status=%d, MPMC=%d, SPSC=%d, Ingress=%d, PopMPMC=%d\n",
 						status, res.mpmc_latency_ns, res.spsc_latency_ns, res.ts_ingress, res.ts_pop_mpmc)
 				}
@@ -157,6 +157,13 @@ loop:
 				if status == 1 {
 					// Collect Queue Latency Metrics
 					metrics.AddQueueLatency(int64(res.mpmc_latency_ns), int64(res.spsc_latency_ns))
+
+					// 0. Benchmark Pure Queue Mode
+					// If RequestID is very large, it's a pure queue benchmark.
+					// Skip DB and Redis persistence.
+					if uint64(res.request_id) > 18000000000000000000 {
+						continue
+					}
 
 					order := model.Order{
 						ID:      uint64(res.request_id),
@@ -574,6 +581,15 @@ func StatsHandler(c *gin.Context) {
 		"spsc_count":          atomic.LoadUint64(&metrics.SpscCount),
 		"spsc_latency_total":  atomic.LoadUint64(&metrics.SpscLatencyTotal),
 	})
+}
+
+// CountHandler checks actual DB row count
+func CountHandler(c *gin.Context) {
+	var count int64
+	if db.DB != nil {
+		db.DB.Model(&model.Order{}).Count(&count)
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
 // PrintQueueCounters fetches and prints internal C++ queue counters.

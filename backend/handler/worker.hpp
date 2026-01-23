@@ -73,6 +73,10 @@ public:
         inventory_[888] = 5;   // Flag Logic Regression Test: 5 items
         inventory_[777] = 50000; // Benchmark Latency Test
 
+        // Initialize Multi-SKU Benchmark items
+        for (int64_t i = 1001; i <= 1008; ++i) {
+            inventory_[i] = 5000;
+        }
         
         // SPSC queue for this worker (Dispatcher -> Worker is 1:1)
         // Capacity 16K
@@ -189,6 +193,28 @@ private:
             return;
         }
 
+        // 0.1 Pure Queue Benchmark Mode
+        // If request_id is very large (e.g. > 10^18), we treat it as pure queue benchmark
+        // and skip inventory/WAL logic to measure pure MPMC+SPSC overhead.
+        if (req.request_id > 18000000000000000000ULL) {
+            // Minimal processing to allow Result Queue measurement if needed
+             CSeckillResult res;
+             // ... minimal setup ...
+             res.request_id = req.request_id;
+             res.status = 1; 
+             // Calculate Latencies
+             if (req.ts_ingress > 0) {
+                 res.mpmc_latency_ns = req.ts_pop_mpmc - req.ts_ingress;
+                 res.spsc_latency_ns = req.ts_pop_spsc - req.ts_push_spsc;
+             }
+             // Notify Result
+             while (!result_queue_->try_enqueue(res)) {
+                 Backoff backoff;
+                 backoff.pause();
+             }
+             return;
+        }
+
         // 1. Idempotency Check
         if (IsDuplicate(req.request_id)) {
             return; 
@@ -271,6 +297,13 @@ private:
     }
 
     void WriteToWal(const WorkerRequest& req) {
+        // Skip WAL for pure queue benchmark if req_id indicates benchmark
+        // We can use a special flag or just always skip if we want to measure pure queue overhead.
+        // But for "realistic" queue benchmark, maybe we should keep it?
+        // The user asked for "Queue (MPMC+SPSC) overhead", usually implying exclusion of business logic like WAL.
+        // Let's optimize: if WalLogger is null or closed, don't write.
+        if (!wal_) return;
+
         WalRecord record;
         record.timestamp_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();

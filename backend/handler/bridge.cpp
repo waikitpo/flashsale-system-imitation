@@ -33,7 +33,7 @@ static std::vector<std::thread> dispatcher_threads; // Sharded Dispatchers
 
 // Worker Pool
 static std::vector<std::unique_ptr<Worker>> workers;
-static const int kWorkerCount = 4; // Configurable
+static const int kWorkerCount = 2; // Optimized for Ryzen 5800H (Single Machine Test): 2 Workers + 2 Dispatchers = 4 Threads. Leaves 12 Threads for Go/Client.
 
 // Global Stats
 static std::atomic<uint64_t> sold_total{0};
