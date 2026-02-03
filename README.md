@@ -22,22 +22,50 @@ A high-performance, crash-safe seckill (flash sale) engine built with **Go** (In
 
 ```mermaid
 graph TD
-    Client[Client] -->|HTTP POST| GoAPI[Go HTTP Server]
-    GoAPI -->|Wait-Free Enqueue| MPMC[C++ MPMC Queue]
+    User((User Traffic))
     
-    subgraph "C++ Core Engine"
-        MPMC --> Dispatcher[Dispatcher Thread]
-        Dispatcher -->|SPSC Queue| Worker1[Worker Thread 1]
-        Dispatcher -->|SPSC Queue| Worker2[Worker Thread 2]
+    subgraph "Access Layer (Go / Network IO Bound)"
+        Nginx[Nginx LB] -->|HTTP/1.1| GoHandler[Go HTTP Handler]
+        GoHandler -->|Pre-Check| Redis[(Redis Cache)]
+        GoHandler -.->|CGO Call| CppBridge[C++ Bridge]
+    end
+
+    subgraph "Core Engine (C++ / CPU Bound / Thread-per-Core)"
+        direction TB
+        CppBridge -->|Wait-Free Enqueue| MPMC{MPMC Queue}
+        MPMC -->|Poll| Dispatcher[Dispatcher Thread]
         
-        Worker1 -->|Inventory Check| RAM[In-Memory Inventory]
-        Worker1 -->|Persist| WAL[Write-Ahead Log]
-        Worker1 -->|Result| ResultQ[Result Queue]
+        Dispatcher -->|Hash(sku_id)| Shard1
+        Dispatcher -->|Hash(sku_id)| Shard2
+        
+        subgraph Shard1 [Core 1: Hot SKU Shard]
+            Q1[SPSC Queue] --> W1[Worker Thread 1]
+            W1 -->|Decrement| Mem1[In-Memory Stock]
+            W1 -->|Append| WAL1[WAL File]
+        end
+        
+        subgraph Shard2 [Core 2: Cold SKU Shard]
+            Q2[SPSC Queue] --> W2[Worker Thread 2]
+            W2 -->|Decrement| Mem2[In-Memory Stock]
+            W2 -->|Append| WAL2[WAL File]
+        end
+    end
+
+    subgraph "Persistence Layer (Go / Disk IO Bound)"
+        W1 & W2 -->|Result Ptr| ResultQ[Result Queue]
+        ResultQ -->|Batch Collect| GoDBWorker[Go DB Worker]
+        GoDBWorker -->|Batch Insert| DB[(PostgreSQL / SQLite)]
     end
     
-    ResultQ -->|Poll| GoConsumer[Go Async Consumer]
-    GoConsumer -->|Batch| GoDBWorker[Go DB Worker]
-    GoDBWorker -->|Bulk Insert| SQLite/PostgreSQL
+    classDef go fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef cpp fill:#ffebee,stroke:#b71c1c,stroke-width:2px;
+    classDef db fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef nginx fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    
+    class GoHandler,GoConsumer,GoDBWorker go;
+    class Dispatcher,W1,W2,MPMC,Q1,Q2,CppBridge cpp;
+    class Redis,DB,WAL1,WAL2 db;
+    class Nginx nginx;
 ```
 
 ## Performance Benchmark Report

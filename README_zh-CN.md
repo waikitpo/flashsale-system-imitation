@@ -22,22 +22,50 @@ disclaimer: 本项目仅用于娱乐目的，不建议在生产环境中使用�
 
 ```mermaid
 graph TD
-    Client[客户端] -->|HTTP POST| GoAPI[Go HTTP 服务]
-    GoAPI -->|Wait-Free 入队| MPMC[C++ MPMC 队列]
+    User((用户流量))
     
-    subgraph "C++ 核心引擎"
-        MPMC --> Dispatcher[分发线程]
-        Dispatcher -->|SPSC 队列| Worker1[工作线程 1]
-        Dispatcher -->|SPSC 队列| Worker2[工作线程 2]
+    subgraph "接入层 (Go / Network IO Bound)"
+        Nginx[Nginx 负载均衡] -->|HTTP/1.1| GoHandler[Go HTTP Handler]
+        GoHandler -->|库存预检| Redis[(Redis 缓存)]
+        GoHandler -.->|CGO 调用| CppBridge[C++ Bridge]
+    end
+
+    subgraph "核心引擎层 (C++ / CPU Bound / Thread-per-Core)"
+        direction TB
+        CppBridge -->|Wait-Free 入队| MPMC{MPMC 队列}
+        MPMC -->|轮询| Dispatcher[分发线程]
         
-        Worker1 -->|库存检查| RAM[内存库存]
-        Worker1 -->|持久化| WAL[预写日志]
-        Worker1 -->|结果| ResultQ[结果队列]
+        Dispatcher -->|Hash(sku_id)| Shard1
+        Dispatcher -->|Hash(sku_id)| Shard2
+        
+        subgraph Shard1 [Core 1: 热门 SKU 分片]
+            Q1[SPSC 队列] --> W1[工作线程 1]
+            W1 -->|内存扣减| Mem1[内存库存]
+            W1 -->|追加写入| WAL1[WAL 日志]
+        end
+        
+        subgraph Shard2 [Core 2: 冷门 SKU 分片]
+            Q2[SPSC 队列] --> W2[工作线程 2]
+            W2 -->|内存扣减| Mem2[内存库存]
+            W2 -->|追加写入| WAL2[WAL 日志]
+        end
+    end
+
+    subgraph "持久化层 (Go / Disk IO Bound)"
+        W1 & W2 -->|结果指针| ResultQ[结果队列]
+        ResultQ -->|批量获取| GoDBWorker[Go 数据库 Worker]
+        GoDBWorker -->|批量插入| DB[(PostgreSQL / SQLite)]
     end
     
-    ResultQ -->|轮询| GoConsumer[Go 异步消费者]
-    GoConsumer -->|批处理| GoDBWorker[Go 数据库 Worker]
-    GoDBWorker -->|批量插入| SQLite/PostgreSQL
+    classDef go fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef cpp fill:#ffebee,stroke:#b71c1c,stroke-width:2px;
+    classDef db fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef nginx fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    
+    class GoHandler,GoConsumer,GoDBWorker go;
+    class Dispatcher,W1,W2,MPMC,Q1,Q2,CppBridge cpp;
+    class Redis,DB,WAL1,WAL2 db;
+    class Nginx nginx;
 ```
 
 ## 性能基准测试报告 (Benchmark Report)
