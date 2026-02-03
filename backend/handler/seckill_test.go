@@ -19,7 +19,7 @@ func init() {
 	config.InitConfig()
 	os.Setenv("USE_PG", "false") // Force SQLite
 	db.InitDB()
-	cache.InitRedis("localhost:6380", "", 0)
+	cache.InitRedis("127.0.0.1:6380", "", 0)
 
 	// Initialize C++ engine once for all benchmarks
 	handler.StartConsumer()

@@ -19,7 +19,7 @@ import (
 const (
 	TargetURL   = "http://localhost:3000/api/seckill/enqueue"
 	StatsURL    = "http://localhost:3000/api/admin/stats"
-	RedisAddr   = "localhost:6379"
+	RedisAddr   = "127.0.0.1:6380"
 	SkuID       = 777   // Special SKU for latency test
 	Stock       = 50000 // Large stock to avoid sold-out during latency test
 	TotalReq    = 5000

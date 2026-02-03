@@ -28,8 +28,8 @@ func main() {
 	db.InitDB() // Initialize Database
 
 	// Initialize Redis
-	// Default to localhost:6379, no password, DB 0
-	redisAddr := "localhost:6379"
+	// Default to 127.0.0.1:6380 to avoid IPv6 issues
+	redisAddr := "127.0.0.1:6380"
 	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
 		redisAddr = addr
 	} else if host := os.Getenv("REDIS_HOST"); host != "" {

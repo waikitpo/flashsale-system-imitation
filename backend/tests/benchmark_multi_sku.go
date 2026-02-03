@@ -18,7 +18,7 @@ import (
 const (
 	TargetURL   = "http://localhost:3000/api/seckill/enqueue"
 	StatsURL    = "http://localhost:3000/api/admin/stats"
-	RedisAddr   = "localhost:6380"
+	RedisAddr   = "127.0.0.1:6380"
 	Stock       = 5000   // Stock per SKU   // Stock per SKU
 	TotalReq    = 400000 // Mixed Workload
 	Concurrency = 1000   // High concurrency
