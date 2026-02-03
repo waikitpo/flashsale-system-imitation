@@ -10,8 +10,8 @@
 #include <utility>
 
 // Vyukov's MPMC bounded queue.
-// Based on:
-//   http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
+// Implementation reference:
+//   https://github.com/rigtorp/MPMCQueue
 //
 // Properties:
 // - Multi-Producer Multi-Consumer

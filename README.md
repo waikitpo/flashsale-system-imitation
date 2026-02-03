@@ -263,6 +263,17 @@ go run benchmark_multi_sku.go
 Once the service is running, you can monitor its status via:
 *   `GET /stats`: Returns real-time metrics including queue depth, DB batch latency, and throughput.
 
+## References
+
+The high-performance queue implementation in this project is heavily inspired by **Dmitry Vyukov's** work (1024cores.net):
+
+*   **rigtorp/MPMCQueue**: [https://github.com/rigtorp/MPMCQueue](https://github.com/rigtorp/MPMCQueue)
+    *   This is the C++11 implementation reference for the core lock-free algorithm used between the Access Layer and the Dispatcher.
+    *   It uses sequence numbers to handle False Sharing and Multi-Producer/Multi-Consumer contention.
+
+*   **Awesome Lock-Free**: [https://github.com/rigtorp/awesome-lockfree](https://github.com/rigtorp/awesome-lockfree)
+    *   A great collection of resources on lock-free programming.
+
 ## About the Frontend
 
 Under development.

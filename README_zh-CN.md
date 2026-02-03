@@ -264,6 +264,17 @@ go run benchmark_multi_sku.go
 服务启动后，可以通过以下接口查看实时运行状态：
 *   `GET /stats`: 返回当前队列深度、数据库批处理延迟、吞吐量等核心指标。
 
+## 参考文献 (References)
+
+本项目核心的高性能队列实现深受 **Dmitry Vyukov** [1024cores.net](http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue) 的文章启发：
+
+*   **rigtorp/MPMCQueue**: [https://github.com/rigtorp/MPMCQueue](https://github.com/rigtorp/MPMCQueue)
+    *   因为 1024cores.net 不知道为啥打不开，所以这是本项目接入层到分发层使用的核心无锁队列算法的 C++11 实现参考。
+    *   它通过序列号 (Sequence based) 解决了伪共享和多生产者/多消费者竞争问题。
+
+*   **Awesome Lock-Free**: [https://github.com/rigtorp/awesome-lockfree](https://github.com/rigtorp/awesome-lockfree)
+    *   提供了大量关于无锁编程的优质资源。
+
 ## 关于前端
 
 开发中。
