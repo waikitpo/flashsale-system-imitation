@@ -150,6 +150,27 @@ We combine two types of lock-free queues to achieve the best of both worlds:
     *   **Tech**: **Wait-Free Ring Buffer**. Since there is only 1 Writer and 1 Reader, **CAS is eliminated entirely**. Synchronization relies solely on memory barriers (`acquire`/`release` semantics).
     *   **Benefit**: This offers the theoretical limit of inter-thread communication latency.
 
+### 4. Traffic Shaping & Backpressure
+The system achieves natural traffic shaping via **multi-level bounded queues**, preventing downstream (database) overload.
+
+*   **The Reservoir Effect**: The MPMC queue (capacity 1024*1024) acts as a massive buffer. When 20k/s requests flood in but the DB can only handle 1k/s, excess requests are held in the queue and processed by Workers at a constant rate.
+*   **Fail-Fast Strategy**: We reject infinite queuing. When the MPMC queue is full, the `Enqueue` operation immediately returns `false`. The Access Layer then responds with `503 Service Unavailable`. This is far superior to letting users wait for timeouts and prevents Out-of-Memory (OOM) crashes.
+*   **Implicit Backpressure Chain**:
+    1.  **DB Slows Down** -> Worker blocks on result submission -> Worker stops pulling from SPSC.
+    2.  **SPSC Fills Up** -> Dispatcher blocks on distribution -> Dispatcher stops pulling from MPMC.
+    3.  **MPMC Fills Up** -> Access Layer fails to enqueue -> **Traffic Shedding Triggered**.
+    This chain ensures every component operates within its limits.
+
+### 5. Rejection Policy & Circuit Breaking
+We employ a multi-layered defense strategy to protect the core when the system is overloaded or components fail:
+
+*   **Redis Circuit Breaker**: If Redis fails 5 times consecutively, the system enters a **Circuit Open** state, returning `503 System Busy` immediately, and attempts recovery after 5 seconds. This prevents storage layer failures from cascading.
+*   **Queue Full Rejection (Load Shedding)**: When the MPMC queue is full, the HTTP layer immediately returns `503 Queue full` and triggers a Redis rollback. This is the ultimate overload protection against OOM.
+*   **Duplicate Request Interception**: Uses Redis atomic ops or C++ in-memory deduplication to return `409 Duplicate purchase` for repeated `request_id`s.
+*   **Sold Out Interception**:
+    1.  **L1 (Redis)**: `409 Sold out` (Distributed interception, stops most traffic).
+    2.  **L2 (C++ Local)**: `409 Sold out` (Local atomic counter interception, the final defense line).
+
 ## Design Decisions
 
 ### Why Hybrid Go + C++?
@@ -221,6 +242,23 @@ go run benchmark_multi_sku.go
 ---
 
 ## Project Structure
+
+```text
+├── backend/
+│   ├── handler/         # Core Logic
+│   │   ├── bridge.cpp   # C++ Bridge (CGO)
+│   │   ├── worker.hpp   # C++ Worker Implementation (Thread-per-Core)
+│   │   ├── mpmc_queue.hpp # Vyukov Lock-Free Queue
+│   │   └── seckill.go   # Go Business Logic & HTTP Handler
+│   ├── tests/           # Benchmark Scripts (Go)
+│   └── main.go          # Entry Point
+├── docker-compose.yml   # Infrastructure Orchestration
+└── README.md            # Documentation
+```
+
+## Monitoring & Observability
+Once the service is running, you can monitor its status via:
+*   `GET /stats`: Returns real-time metrics including queue depth, DB batch latency, and throughput.
 
 ## About the Frontend
 
