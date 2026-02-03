@@ -35,8 +35,8 @@ graph TD
         CppBridge -->|Wait-Free 入队| MPMC{MPMC 队列}
         MPMC -->|轮询| Dispatcher[分发线程]
         
-        Dispatcher -->|Hash(sku_id)| Shard1
-        Dispatcher -->|Hash(sku_id)| Shard2
+        Dispatcher -- "Hash(sku_id)" --> Q1
+        Dispatcher -- "Hash(sku_id)" --> Q2
         
         subgraph Shard1 [Core 1: 热门 SKU 分片]
             Q1[SPSC 队列] --> W1[工作线程 1]

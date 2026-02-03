@@ -35,8 +35,8 @@ graph TD
         CppBridge -->|Wait-Free Enqueue| MPMC{MPMC Queue}
         MPMC -->|Poll| Dispatcher[Dispatcher Thread]
         
-        Dispatcher -->|Hash(sku_id)| Shard1
-        Dispatcher -->|Hash(sku_id)| Shard2
+        Dispatcher -- "Hash(sku_id)" --> Q1
+        Dispatcher -- "Hash(sku_id)" --> Q2
         
         subgraph Shard1 [Core 1: Hot SKU Shard]
             Q1[SPSC Queue] --> W1[Worker Thread 1]
