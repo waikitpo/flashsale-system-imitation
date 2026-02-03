@@ -253,6 +253,9 @@ go run benchmark_multi_sku.go
 │   │   └── seckill.go   # Go 业务逻辑与 HTTP Handler
 │   ├── tests/           # 压测脚本 (Go)
 │   └── main.go          # 程序入口
+├── engine/              # [DEPRECATED] 原始 C++ 引擎代码
+│                        # 注意：仅供参考/观赏。
+│                        # 由于 CGO 编译和架构原因，C++ 核心代码已合并至 backend/handler。
 ├── docker-compose.yml   # 基础设施编排
 └── README.md            # 说明文档
 ```

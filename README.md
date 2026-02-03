@@ -252,6 +252,9 @@ go run benchmark_multi_sku.go
 │   │   └── seckill.go   # Go Business Logic & HTTP Handler
 │   ├── tests/           # Benchmark Scripts (Go)
 │   └── main.go          # Entry Point
+├── engine/              # [DEPRECATED] Original C++ Engine Code
+│                        # Note: For reference/display purposes only.
+│                        # Due to CGO compilation and architecture reasons, core C++ code was merged into backend/handler.
 ├── docker-compose.yml   # Infrastructure Orchestration
 └── README.md            # Documentation
 ```
