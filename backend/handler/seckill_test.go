@@ -17,7 +17,7 @@ func init() {
 	// os.Chdir("..")
 
 	config.InitConfig()
-	os.Setenv("USE_PG", "false") // Force SQLite
+	os.Setenv("USE_PG", "true") // Force PostgreSQL
 	db.InitDB()
 	cache.InitRedis("127.0.0.1:6380", "", 0)
 

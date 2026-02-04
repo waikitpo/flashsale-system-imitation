@@ -208,6 +208,8 @@ docker-compose up -d
 
 ```bash
 cd backend
+# 创建数据目录 (用于存放 WAL 日志)，否则启动会崩溃
+mkdir -p data 
 go mod tidy
 go build -o server .
 ```
@@ -239,6 +241,38 @@ go run benchmark_high_concurrency.go
 # 运行混合负载压测 (模拟真实场景)
 go run benchmark_multi_sku.go
 ```
+
+---
+
+## 常见问题与故障排除 (Troubleshooting)
+
+如果您在拉取代码后首次运行时遇到问题，请检查以下常见原因：
+
+### 1. 启动时崩溃 (Crash on Startup)
+*   **WAL 目录缺失**: 
+    *   **现象**: 程序启动即退出，日志显示 `Panic` 或 C++ 异常。
+    *   **原因**: `backend/data` 目录用于存放 WAL 日志文件，由于 git 通常忽略空目录，clone 后可能缺失。
+    *   **解决**: 手动创建目录 `mkdir -p backend/data`。
+*   **野指针 (Segmentation Fault)**:
+    *   **现象**: `segmentation fault (core dumped)`。
+    *   **原因**: C++ Worker 类中的部分测试用指针（如 `check_correctness_`）在某些编译器环境下未自动初始化为 `nullptr`，导致访问随机内存地址。
+    *   **解决**: 确保 `backend/handler/worker.hpp` 构造函数中显式初始化这些指针（最新代码已修复此问题）。
+
+### 2. 依赖问题
+*   **Redis 连接拒绝**:
+    *   **现象**: `dial tcp 127.0.0.1:6380: connect: connection refused`。
+    *   **原因**: Docker 容器未启动。
+    *   **解决**: 运行 `docker-compose up -d redis`。
+
+### 3. 数据库模式选择
+*   **默认使用 SQLite**: 如果未设置环境变量，系统默认使用内嵌的 SQLite。
+*   **开启 PostgreSQL**: 如果需要进行高性能全链路压测，请设置 `USE_PG=true` 环境变量启动服务。
+
+### 4. 目录冗余问题
+*   **backend/handler/db 目录**:
+    *   **现象**: 运行 `go test` 或基准测试后，发现 `backend/handler/` 目录下多了一个 `db` 文件夹。
+    *   **原因**: 测试代码使用相对路径 (`db/seckill.db`) 初始化 SQLite，导致在测试运行目录 (`backend/handler`) 下生成了新的数据库文件。
+    *   **解决**: 这是测试生成的临时文件，**完全可以安全删除或忽略**。真正的运行时数据库位于 `backend/db/`。
 
 ---
 

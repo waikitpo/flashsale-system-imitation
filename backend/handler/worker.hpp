@@ -64,7 +64,8 @@ class Worker {
 public:
     Worker(int id, std::atomic<uint64_t>& global_sold_counter, MpmcQueue<CSeckillResult>* result_queue, std::atomic<uint64_t>* barrier_count, 
            std::unordered_map<int64_t, std::atomic<bool>*> sold_out_flags) 
-        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue), barrier_count_(barrier_count), sold_out_flags_(sold_out_flags) {
+        : id_(id), sold_total_(global_sold_counter), running_(false), result_queue_(result_queue), barrier_count_(barrier_count), sold_out_flags_(sold_out_flags),
+          check_correctness_(nullptr), last_seq_(nullptr), gap_(nullptr), dup_(nullptr) {
         // Initialize mock inventory
         inventory_[123] = 10000000; // ample stock for testing
         inventory_[456] = 100;
@@ -128,6 +129,12 @@ private:
     // Barrier Counter Reference
     std::string wal_path_;
     std::atomic<uint64_t>* barrier_count_;
+    
+    // Correctness Check Pointers (Optional)
+    std::atomic<bool>* check_correctness_;
+    uint64_t* last_seq_;
+    uint64_t* gap_;
+    uint64_t* dup_;
 
     void Loop() {
         // Pin to core?
@@ -218,6 +225,30 @@ private:
         // 1. Idempotency Check
         if (IsDuplicate(req.request_id)) {
             return; 
+        }
+
+        // 1.5 Correctness Check (For Tests)
+        if (check_correctness_ && check_correctness_->load(std::memory_order_relaxed)) {
+            if (last_seq_ && gap_ && dup_) {
+                uint64_t seq = req.request_id;
+                // Initialize if first
+                if (*last_seq_ == 0 && seq == 1) {
+                    *last_seq_ = 1;
+                } else {
+                    if (seq > *last_seq_) {
+                         if (seq != *last_seq_ + 1) {
+                             // Gap detected
+                             // std::cout << "Gap: " << *last_seq_ << " -> " << seq << std::endl;
+                             *gap_ += (seq - *last_seq_ - 1);
+                         }
+                         *last_seq_ = seq;
+                    } else {
+                         // Duplicate or Reordering
+                         // std::cout << "Dup: " << seq << " vs " << *last_seq_ << std::endl;
+                         *dup_ += 1;
+                    }
+                }
+            }
         }
 
         // Prepare Result
