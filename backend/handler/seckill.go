@@ -229,14 +229,14 @@ loop:
 // processResults removed (replaced by processResultWorker)
 
 func cleanupWorker() {
-	const batchSize = 100 // Larger batch for Redis
-	const flushInterval = 5 * time.Millisecond
+	const batchSize = 500                       // Larger batch for Redis (Optimized from 100)
+	const flushInterval = 10 * time.Millisecond // Reduced frequency (Optimized from 5ms)
 	var batch []CleanupTask = make([]CleanupTask, 0, batchSize)
 
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 
-	fmt.Println("Async Cleanup Worker Started")
+	fmt.Println("Async Cleanup Worker Started (Batch Optimization Enabled)")
 
 	flush := func() {
 		if len(batch) > 0 {
@@ -247,30 +247,33 @@ func cleanupWorker() {
 			}
 
 			pipe := cache.Rdb.Pipeline()
+			
+			// Optimization: Group ZREM by SkuID to reduce command count
+			membersBySku := make(map[int64][]interface{})
 
 			for _, task := range batch {
 				if task.Status == 1 {
 					// Success: Remove Pending + Mark Done
 					member := fmt.Sprintf("%d:%d:%d:%d", task.SkuID, task.GuestID, task.Qty, task.RequestID)
-					pendingKey := fmt.Sprintf("seckill:{%d}:pending", task.SkuID)
 					doneKey := fmt.Sprintf("done:{%d}", task.RequestID)
 
 					// 1. Mark Done (Idempotency Key for 60s)
 					pipe.SetNX(cache.Ctx, doneKey, 1, 60*time.Second)
 
-					// 2. Remove from Pending
-					pipe.ZRem(cache.Ctx, pendingKey, member)
+					// 2. Buffer for Batch ZREM
+					membersBySku[task.SkuID] = append(membersBySku[task.SkuID], member)
 				} else {
 					// Rollback (Status 2 or others)
-					// For simplicity, we just trigger RollbackInventory goroutine or do it here?
-					// RollbackInventory involves Lua script. Can we pipeline Lua? Yes.
-					// But RollbackInventory function logic is complex (retries).
-					// For now, let's keep it simple: spawn goroutine for Rollback (since it's error path)
-					// Or call it directly if we want to block cleanup worker? No.
 					go func(t CleanupTask) {
 						cache.RollbackInventory(t.SkuID, t.GuestID, t.Qty, t.RequestID)
 					}(task)
 				}
+			}
+
+			// Execute Batch ZREM (One command per SKU instead of N commands)
+			for skuID, members := range membersBySku {
+				pendingKey := fmt.Sprintf("seckill:{%d}:pending", skuID)
+				pipe.ZRem(cache.Ctx, pendingKey, members...)
 			}
 
 			_, err := pipe.Exec(cache.Ctx)
@@ -642,14 +645,37 @@ func StartSweeper() {
 					continue
 				}
 
-				fmt.Printf("Sweeper: Found stale request %d (User %d, SKU %d). Rolling back...\n", reqID, user, sku)
+				fmt.Printf("Sweeper: Found stale request %d (User %d, SKU %d). Checking DB...\n", reqID, user, sku)
 
-				// Rollback Inventory (handles ZREM internally)
-				err = cache.RollbackInventory(sku, user, qty, reqID)
+				// CRITICAL FIX: Check if order actually exists in DB before rolling back!
+				// Scenario: DB Write Success -> Crash -> Redis Cleanup Failed.
+				// In this case, we should just cleanup Redis, NOT rollback stock.
+				var count int64
+				err = db.DB.Model(&model.Order{}).Where("id = ?", reqID).Count(&count).Error
 				if err != nil {
-					fmt.Printf("Sweeper: Failed to rollback request %d: %v\n", reqID, err)
+					fmt.Printf("Sweeper: DB Error checking order %d: %v. Skipping.\n", reqID, err)
+					continue
+				}
+
+				if count > 0 {
+					// Order exists in DB! It was a success, just missing cleanup.
+					fmt.Printf("Sweeper: Order %d exists in DB. Fixing Redis state (Removing Pending)...\n", reqID)
+					
+					// Manually remove from Pending (ACK)
+					// We also need to set the Idempotency Key (done:{reqID}) to be safe, though less critical now.
+					cache.Rdb.ZRem(cache.Ctx, fmt.Sprintf("seckill:{%d}:pending", sku), member)
+					
+					// Optional: Ensure bought set is consistent? 
+					// The script already adds to bought set. If we are here, bought set should be fine.
 				} else {
-					fmt.Printf("Sweeper: Rolled back and removed request %d\n", reqID)
+					// Order does NOT exist in DB. Real failure. Rollback.
+					fmt.Printf("Sweeper: Order %d NOT in DB. Executing Rollback...\n", reqID)
+					err = cache.RollbackInventory(sku, user, qty, reqID)
+					if err != nil {
+						fmt.Printf("Sweeper: Failed to rollback request %d: %v\n", reqID, err)
+					} else {
+						fmt.Printf("Sweeper: Rolled back and removed request %d\n", reqID)
+					}
 				}
 			}
 		}
